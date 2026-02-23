@@ -6,7 +6,10 @@ A Streamlit web application for searching and browsing course data extracted fro
 
 - Search courses by location (dropdown filter)
 - Search courses by title
-- Search courses by keyword (searches across title, description, skills, and learning objectives)
+- Search courses by keyword (exact text matching or semantic search)
+- Semantic search using ChromaDB (finds courses by meaning, not just exact words)
+- Filter by course type and price range
+- Sort results by title, location, or cost
 - View detailed course information including instructor, cost, learning objectives, and materials
 
 ## Installation
@@ -36,9 +39,19 @@ python pdf_to_dataframe.py path\to\your\pdfs\*.pdf
 
 This will process all specified PDF files and create a `courses.pkl` file in the same directory as the PDFs.
 
+### Setting up Semantic Search (Optional)
+
+To enable semantic search functionality, create a ChromaDB database from your course data:
+
+```bash
+python grounding.py
+```
+
+This creates a vector database in the `data/courses_db` directory that enables semantic search (finding courses by meaning rather than exact text matches).
+
 ### Running the Application
 
-Once you have the `courses.pkl` file, update the path in `app.py` (line 9) to point to your pickle file location, then run:
+Once you have the `courses.pkl` file, update the path in `app.py` (line 13) to point to your pickle file location, then run:
 
 ```bash
 streamlit run app.py
@@ -50,11 +63,13 @@ The app will open in your default web browser at `http://localhost:8501`
 
 The application loads course data from a pickle file containing extracted information from PDF course catalogs. You must first run `pdf_to_dataframe.py` on your PDF files to generate this pickle file.
 
+For semantic search functionality, run `grounding.py` to create a ChromaDB vector database. This enables intelligent search that understands meaning (e.g., searching for "baking" will find "waffle" courses).
+
 ## Project Structure
 
-- `app.py` - Main Streamlit application
-- `pdf_samples/` - Directory containing 4 PDF samples
-- `all_pdfs/` - Directory containing all of the PDF files and the pickled dataframe
-- `data/` - Directory containing the chromadb
+- `app.py` - Main Streamlit application with semantic search support
 - `pdf_to_dataframe.py` - Script for extracting data from PDFs
+- `grounding.py` - Script for creating ChromaDB vector database for semantic search
+- `search.py` - Example script showing how to query the ChromaDB database
 - `requirements.txt` - Python dependencies
+- `data/` - Directory containing the ChromaDB vector database (created by grounding.py)

@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import math
+import chromadb
 
 # Page config
 st.set_page_config(page_title="Course Search", page_icon="📚", layout="wide")
@@ -12,7 +13,19 @@ st.set_page_config(page_title="Course Search", page_icon="📚", layout="wide")
 def load_data():
     return pd.read_pickle("all_pdfs/courses.pkl")
 
+@st.cache_resource
+def load_chroma_collection():
+    """Load ChromaDB collection for semantic search"""
+    try:
+        client = chromadb.PersistentClient(path="data/courses_db")
+        collection = client.get_collection(name="course_catalog")
+        return collection
+    except Exception as e:
+        st.warning(f"ChromaDB not available: {e}. Semantic search disabled.")
+        return None
+
 df = load_data().copy()
+chroma_collection = load_chroma_collection()
 
 # Data hygiene (prevents .str.contains crashes + makes sorting reliable)
 text_cols = ["title", "description", "location", "course_type", "instructor"]
@@ -69,6 +82,7 @@ def clear_filters():
     st.session_state["ctype"] = []
     st.session_state["title"] = ""
     st.session_state["kw"] = ""
+    st.session_state["semantic"] = False
     st.session_state["price"] = (
         float(df["cost_gbp"].min()) if df["cost_gbp"].notna().any() else 0.0,
         float(df["cost_gbp"].max()) if df["cost_gbp"].notna().any() else 0.0,
@@ -103,6 +117,17 @@ with col3:
 
 with col4:
     keyword_search = st.text_input("🔍 Search by Keyword", placeholder="e.g., culinary", key="kw")
+
+# Semantic search toggle
+col_semantic, col_empty = st.columns([2, 6])
+with col_semantic:
+    use_semantic = st.checkbox(
+        "🧠 Use Semantic Search", 
+        value=False, 
+        key="semantic",
+        disabled=(chroma_collection is None),
+        help="Find courses by meaning, not just exact words (e.g., 'baking' finds 'waffle' courses)"
+    )
 
 # Second row: price + sort + clear
 colA, colB, colC = st.columns([3, 2, 1])
@@ -145,7 +170,7 @@ with colC:
     st.button("🧹 Clear filters", on_click=clear_filters)
 
 # Reset expanded view if filters changed (prevents “wrong details open”)
-current_filters = (tuple(location_search), tuple(course_type_search), title_search, keyword_search, price_range, sort_by)
+current_filters = (tuple(location_search), tuple(course_type_search), title_search, keyword_search, use_semantic, price_range, sort_by)
 if "prev_filters" not in st.session_state:
     st.session_state.prev_filters = current_filters
 else:
@@ -159,6 +184,33 @@ else:
 # ---------------------------
 filtered_df = df.copy()
 
+# Semantic search takes priority if enabled and keyword is provided
+if use_semantic and keyword_search and chroma_collection is not None:
+    try:
+        # Query ChromaDB for semantically similar courses
+        results = chroma_collection.query(
+            query_texts=[keyword_search],
+            n_results=min(50, len(df))  # Get top 50 semantic matches
+        )
+        
+        # Get the class IDs from semantic search results
+        if results['ids'] and len(results['ids'][0]) > 0:
+            semantic_ids = results['ids'][0]
+            filtered_df = filtered_df[filtered_df['class_id'].isin(semantic_ids)]
+            
+            # Remove duplicates and preserve semantic ranking order
+            id_to_rank = {cid: idx for idx, cid in enumerate(semantic_ids)}
+            filtered_df['_semantic_rank'] = filtered_df['class_id'].map(id_to_rank)
+            filtered_df = filtered_df.drop_duplicates(subset=['class_id'], keep='first')
+            filtered_df = filtered_df.sort_values('_semantic_rank').drop(columns=['_semantic_rank'])
+        else:
+            filtered_df = filtered_df.iloc[0:0]  # Empty result
+            
+    except Exception as e:
+        st.error(f"Semantic search error: {e}")
+        filtered_df = df.copy()
+
+# Apply traditional filters
 if location_search:
     filtered_df = filtered_df[filtered_df["location"].isin(location_search)]
 
@@ -168,7 +220,8 @@ if course_type_search:
 if title_search:
     filtered_df = filtered_df[filtered_df["title"].str.contains(title_search, case=False, na=False)]
 
-if keyword_search:
+# Only apply keyword filter if NOT using semantic search
+if keyword_search and not use_semantic:
     # Search across multiple text columns; fillna already handled above
     mask = (
         filtered_df["title"].str.contains(keyword_search, case=False, na=False)
@@ -197,16 +250,31 @@ elif sort_by == "Cost (high→low)":
 # ---------------------------
 # Results header + pagination
 # ---------------------------
-st.markdown(f"### Found {len(filtered_df)} course(s)")
-st.markdown("---")
-
 page_size = 12
 total = len(filtered_df)
 total_pages = max(1, math.ceil(total / page_size))
 
-page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1, key="page")
+# Initialize page in session state if not present
+if "page" not in st.session_state:
+    st.session_state["page"] = 1
+
+# Ensure page is within valid range
+if st.session_state["page"] > total_pages:
+    st.session_state["page"] = 1
+
+page = st.number_input("Page", min_value=1, max_value=total_pages, step=1, key="page")
 start = (page - 1) * page_size
 end = start + page_size
+
+# Display results header
+if total > 0:
+    start_num = start + 1
+    end_num = min(end, total)
+    st.markdown(f"### Showing courses {start_num}-{end_num} of {total}")
+else:
+    st.markdown(f"### Found 0 courses")
+
+st.markdown("---")
 
 page_df = filtered_df.iloc[start:end]
 courses_list = page_df.to_dict("records")
