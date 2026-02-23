@@ -114,11 +114,14 @@ with colA:
     else:
         min_cost, max_cost = 0.0, 0.0
 
+    # Initialize price in session state if not present
+    if "price" not in st.session_state:
+        st.session_state["price"] = (min_cost, max_cost)
+
     price_range = st.slider(
         "💷 Price range (£)",
         min_value=min_cost,
         max_value=max_cost,
-        value=(min_cost, max_cost),
         step=1.0,
         key="price",
     )
@@ -298,7 +301,7 @@ else:
 # Sidebar
 # ---------------------------
 with st.sidebar:
-    st.image("dandori-logo.png", use_container_width=True)
+    st.image("dandori-logo.png", width='stretch')
     st.metric("Courses Available", len(df))
     st.metric("Courses Found", len(filtered_df))
 
