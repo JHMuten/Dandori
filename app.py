@@ -11,7 +11,7 @@ st.set_page_config(page_title="Course Search", page_icon="📚", layout="wide")
 # ---------------------------
 @st.cache_data
 def load_data():
-    return pd.read_pickle("all_pdfs/courses.pkl")
+    return pd.read_pickle("data/courses.pkl")
 
 @st.cache_resource
 def load_chroma_collection():
