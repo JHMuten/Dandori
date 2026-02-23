@@ -5,8 +5,7 @@ all_pdfs/*.pdf
 all_pdfs/**/*.pdf
 all_pdfs/*.pkl
 all_pdfs/**/*.pkl
-all-pdfs/
-pdf-samples/
+pdf_samples/
 data/
 
 # --- Python / Streamlit junk ---

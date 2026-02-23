@@ -53,6 +53,8 @@ The application loads course data from a pickle file containing extracted inform
 ## Project Structure
 
 - `app.py` - Main Streamlit application
-- `pdf-samples/` - Directory containing PDF files and the pickled dataframe
+- `pdf_samples/` - Directory containing 4 PDF samples
+- `all_pdfs/` - Directory containing all of the PDF files and the pickled dataframe
+- `data/` - Directory containing the chromadb
 - `pdf_to_dataframe.py` - Script for extracting data from PDFs
 - `requirements.txt` - Python dependencies
