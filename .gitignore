@@ -1,3 +1,19 @@
-pdf-samples/
+pdf-samples/# --- Ignore large data/artifacts ---
+*.zip
+all_pdfs/
+all_pdfs/*.pdf
+all_pdfs/**/*.pdf
+all_pdfs/*.pkl
+all_pdfs/**/*.pkl
 all-pdfs/
+pdf-samples/
 data/
+
+# --- Python / Streamlit junk ---
+__pycache__/
+*.pyc
+.streamlit/
+Project_Brief.txt
+All\
+PDFs.zip
+Project_Brief.txt
