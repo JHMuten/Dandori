@@ -62,20 +62,20 @@ if "class_id" not in df.columns:
 # Session state (stable details view + filter change detection)
 # ---------------------------
 if "expanded_id" not in st.session_state:
-    st.session_state.expanded_id = None
+    st.session_state["expanded_id"] = None
 
 def clear_filters():
-    st.session_state.loc = []
-    st.session_state.ctype = []
-    st.session_state.title = ""
-    st.session_state.kw = ""
-    st.session_state.price = (
+    st.session_state["loc"] = []
+    st.session_state["ctype"] = []
+    st.session_state["title"] = ""
+    st.session_state["kw"] = ""
+    st.session_state["price"] = (
         float(df["cost_gbp"].min()) if df["cost_gbp"].notna().any() else 0.0,
         float(df["cost_gbp"].max()) if df["cost_gbp"].notna().any() else 0.0,
     )
-    st.session_state.sort = "Relevance (default)"
-    st.session_state.page = 1
-    st.session_state.expanded_id = None
+    st.session_state["sort"] = "Relevance (default)"
+    st.session_state["page"] = 1
+    st.session_state["expanded_id"] = None
 
 # ---------------------------
 # Title
@@ -139,9 +139,7 @@ with colB:
 with colC:
     st.write("")  # spacing
     st.write("")
-    if st.button("🧹 Clear filters"):
-        clear_filters()
-        st.rerun()
+    st.button("🧹 Clear filters", on_click=clear_filters)
 
 # Reset expanded view if filters changed (prevents “wrong details open”)
 current_filters = (tuple(location_search), tuple(course_type_search), title_search, keyword_search, price_range, sort_by)
