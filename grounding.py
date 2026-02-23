@@ -8,7 +8,7 @@ import pandas as pd
 import chromadb
 
 def load_data():
-    return pd.read_pickle('all-pdfs/courses.pkl')
+    return pd.read_pickle('all_pdfs/courses.pkl')
 
 df = load_data()
 
