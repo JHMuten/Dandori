@@ -7,7 +7,7 @@ st.set_page_config(page_title="Course Search", page_icon="📚", layout="wide")
 # Load data
 @st.cache_data
 def load_data():
-    return pd.read_pickle('pdf-samples/courses.pkl')
+    return pd.read_pickle('all-pdfs/courses.pkl')
 
 df = load_data()
 
