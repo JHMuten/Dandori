@@ -58,7 +58,8 @@ class CourseRecommender:
         # Local embeddings (must match grounding.py)
         # -----------------------
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=local_model_name
+            model_name=local_model_name,
+            device="cpu"  # Explicitly use CPU for lower memory usage
         )
         client = chromadb.PersistentClient(path=persist_dir)
         self.collection = client.get_or_create_collection(

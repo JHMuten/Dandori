@@ -35,7 +35,8 @@ def main():
     print(f"✅ De-duplicated class_id: {before} -> {after}")
 
     embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="all-MiniLM-L6-v2"
+        model_name="all-MiniLM-L6-v2",
+        device="cpu"  # Use CPU for lower memory usage
     )
 
     client = chromadb.PersistentClient(path=PERSIST_DIR)

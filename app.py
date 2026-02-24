@@ -140,8 +140,10 @@ with tab_search:
                 return None
             
             try:
+                # Use device='cpu' and optimize for lower memory usage
                 embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name="all-MiniLM-L6-v2"
+                    model_name="all-MiniLM-L6-v2",
+                    device="cpu"  # Explicitly use CPU to avoid GPU memory allocation attempts
                 )
             except requests.exceptions.HTTPError as e:
                 if "429" in str(e):
@@ -562,21 +564,29 @@ with tab_chat:
             st.error("Chatbot is currently unavailable. Please try again later or use the Search tab.")
             st.stop()
         
+        # Add user message and display it immediately
         st.session_state.messages.append({"role": "user", "content": user_msg})
+        
+        # Display the user message right away
+        with st.chat_message("user"):
+            st.write(user_msg)
+        
+        # Show a spinner while processing
+        with st.spinner("Thinking..."):
+            # Deterministic count handling
+            answer = handle_count_question(user_msg, st.session_state.recommender)
+            if answer is not None:
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.rerun()
 
-        # Deterministic count handling
-        answer = handle_count_question(user_msg, st.session_state.recommender)
-        if answer is not None:
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            st.rerun()
+            # Normal RAG flow
+            recs = st.session_state.recommender.retrieve(user_msg, n_results=8)
+            reply = st.session_state.recommender.respond(user_msg, recs)
 
-        # Normal RAG flow
-        recs = st.session_state.recommender.retrieve(user_msg, n_results=8)
-        reply = st.session_state.recommender.respond(user_msg, recs)
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": reply,
-            "recs": [r.__dict__ for r in recs]
-        })
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": reply,
+                "recs": [r.__dict__ for r in recs]
+            })
+        
         st.rerun()
