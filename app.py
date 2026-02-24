@@ -4,6 +4,10 @@ import streamlit as st
 import pandas as pd
 import chromadb
 from recommender import CourseRecommender
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ---------------------------
 # Page config MUST be the first Streamlit call
@@ -127,6 +131,7 @@ with tab_search:
         try:
             from chromadb.utils import embedding_functions
             import os
+            import requests
             
             db_path = "data/courses_db"
             
@@ -134,9 +139,25 @@ with tab_search:
             if not os.path.exists(db_path):
                 return None
             
-            embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name="all-MiniLM-L6-v2"
-            )
+            try:
+                embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name="all-MiniLM-L6-v2"
+                )
+            except requests.exceptions.HTTPError as e:
+                if "429" in str(e):
+                    st.error("⚠️ Hugging Face rate limit exceeded. Please try again in a few minutes.")
+                    st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
+                else:
+                    st.error(f"Failed to download model from Hugging Face: {str(e)}")
+                return None
+            except Exception as e:
+                if "429" in str(e) or "Too Many Requests" in str(e):
+                    st.error("⚠️ Hugging Face rate limit exceeded. Please try again in a few minutes.")
+                    st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
+                else:
+                    st.error(f"Failed to load embedding model: {str(e)}")
+                return None
+            
             client = chromadb.PersistentClient(path=db_path)
             collection = client.get_collection(
                 name="course_catalog",
@@ -419,7 +440,8 @@ with tab_search:
                     st.markdown(f"**Location:** 📍 {course.get('location','') or 'Unknown'}")
                     st.markdown(f"**Course Type:** 📚 {course.get('course_type','') or 'Unknown'}")
                     cost = course.get("cost_gbp", None)
-                    st.markdown(f"**Cost:** 💷 £{cost if pd.notna(cost) else 'Unknown'}")
+                    cost_display = f"£{cost:.2f}" if pd.notna(cost) else "Unknown"
+                    st.markdown(f"**Cost:** 💷 {cost_display}")
                 with col_b:
                     st.markdown(f"**Class ID:** {course['class_id']}")
 
@@ -467,7 +489,8 @@ with tab_search:
                             st.markdown(f"📍 {course.get('location','') or 'Unknown'}")
                             st.markdown(f"📚 {course.get('course_type','') or 'Unknown'}")
                             cost = course.get("cost_gbp", None)
-                            st.markdown(f"� £{cost if pd.notna(cost) else 'Unknown'}")
+                            cost_display = f"£{cost:.2f}" if pd.notna(cost) else "Unknown"
+                            st.markdown(f"💷 {cost_display}")
 
                             if st.button("View Details", key=f"view_{course['class_id']}"):
                                 st.session_state.expanded_id = course["class_id"]
@@ -495,8 +518,17 @@ with tab_chat:
     st.write("Tell me what you're in the mood for, and I'll suggest a few classes.")
 
     if "recommender" not in st.session_state:
-        with st.spinner("Loading chatbot AI model (first time may take 30-60 seconds)..."):
-            st.session_state.recommender = CourseRecommender()
+        try:
+            with st.spinner("Loading chatbot AI model (first time may take 30-60 seconds)..."):
+                st.session_state.recommender = CourseRecommender()
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                st.error("⚠️ Hugging Face rate limit exceeded. Chatbot temporarily unavailable.")
+                st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
+                st.info("Please try again in a few minutes or use the Search tab instead.")
+            else:
+                st.error(f"Failed to initialize chatbot: {str(e)}")
+            st.session_state.recommender = None
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -513,13 +545,23 @@ with tab_chat:
                 for r in m["recs"]:
                     with st.container(border=True):
                         st.markdown(f"**{r['title']}**")
-                        st.markdown(f"📍 {r['location']} • 💷 £{r['cost_gbp']} • 📚 {r['course_type']}")
+                        cost = r.get('cost_gbp')
+                        try:
+                            cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
+                        except (ValueError, TypeError):
+                            cost_display = f"£{cost}" if cost else "Unknown"
+                        st.markdown(f"📍 {r['location']} • 💷 {cost_display} • 📚 {r['course_type']}")
                         st.markdown(f"👤 {r['instructor']} • 🆔 {r['class_id']}")
 
     # ✅ chat_input MUST be last
     user_msg = st.chat_input("e.g. Something creative in Yorkshire under £80…")
 
     if user_msg:
+        # Check if recommender is available
+        if st.session_state.recommender is None:
+            st.error("Chatbot is currently unavailable. Please try again later or use the Search tab.")
+            st.stop()
+        
         st.session_state.messages.append({"role": "user", "content": user_msg})
 
         # Deterministic count handling
