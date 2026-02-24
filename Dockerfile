@@ -7,13 +7,16 @@ WORKDIR /app
 # Set environment variables for memory optimization
 ENV PYTHONUNBUFFERED=1 \
     STREAMLIT_SERVER_MAX_UPLOAD_SIZE=10 \
-    TRANSFORMERS_CACHE=/tmp/transformers_cache \
-    HF_HOME=/tmp/hf_home \
-    TORCH_HOME=/tmp/torch_home
+    TRANSFORMERS_CACHE=/app/.cache/transformers \
+    HF_HOME=/app/.cache/huggingface \
+    TORCH_HOME=/app/.cache/torch
 
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the sentence-transformers model to avoid runtime downloads
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Copy the rest of the app code
 COPY . .

@@ -139,6 +139,12 @@ with tab_search:
             if not os.path.exists(db_path):
                 return None
             
+            # Get HF token from environment
+            hf_token = os.getenv("HF_TOKEN")
+            if hf_token:
+                # Set token for huggingface_hub
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+            
             try:
                 # Use device='cpu' and optimize for lower memory usage
                 embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -148,14 +154,20 @@ with tab_search:
             except requests.exceptions.HTTPError as e:
                 if "429" in str(e):
                     st.error("⚠️ Hugging Face rate limit exceeded. Please try again in a few minutes.")
-                    st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
+                    if not hf_token:
+                        st.warning("💡 HF_TOKEN not found in environment. Set it in Cloud Run secrets for higher rate limits.")
+                    else:
+                        st.info("HF_TOKEN is set but rate limit still exceeded. You may need to wait a few minutes.")
                 else:
                     st.error(f"Failed to download model from Hugging Face: {str(e)}")
                 return None
             except Exception as e:
                 if "429" in str(e) or "Too Many Requests" in str(e):
                     st.error("⚠️ Hugging Face rate limit exceeded. Please try again in a few minutes.")
-                    st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
+                    if not hf_token:
+                        st.warning("💡 HF_TOKEN not found in environment. Set it in Cloud Run secrets for higher rate limits.")
+                    else:
+                        st.info("HF_TOKEN is set but rate limit still exceeded. You may need to wait a few minutes.")
                 else:
                     st.error(f"Failed to load embedding model: {str(e)}")
                 return None
