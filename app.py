@@ -123,25 +123,35 @@ with tab_search:
 
     @st.cache_resource
     def load_chroma_collection():
-        """Load ChromaDB collection for semantic search"""
+        """Load ChromaDB collection for semantic search - lazy loaded"""
         try:
             from chromadb.utils import embedding_functions
+            import os
+            
+            db_path = "data/courses_db"
+            
+            # Check if database exists
+            if not os.path.exists(db_path):
+                return None
             
             embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name="all-MiniLM-L6-v2"
             )
-            client = chromadb.PersistentClient(path="data/courses_db")
+            client = chromadb.PersistentClient(path=db_path)
             collection = client.get_collection(
                 name="course_catalog",
                 embedding_function=embedding_fn
             )
+            
             return collection
         except Exception as e:
-            st.warning(f"ChromaDB not available: {e}. Semantic search disabled.")
+            st.error(f"ChromaDB error: {str(e)}")
             return None
 
     df = load_data().copy()
-    chroma_collection = load_chroma_collection()
+    
+    # Don't load ChromaDB on startup - only when needed
+    chroma_collection = None
 
     # Ensure consistency with Chroma index (unique class_id)
     df["class_id"] = df["class_id"].astype(str)
@@ -222,13 +232,25 @@ with tab_search:
     # Semantic search toggle
     col_semantic, col_empty = st.columns([2, 6])
     with col_semantic:
+        # Check if ChromaDB is available
+        import os
+        chroma_available = os.path.exists("data/courses_db")
+        
         use_semantic = st.checkbox(
             "🧠 Use Semantic Search",
             value=False,
             key="semantic",
-            disabled=(chroma_collection is None),
+            disabled=(not chroma_available),
             help="Find courses by meaning, not just exact words (e.g., 'baking' finds 'waffle' courses)"
         )
+        
+        # Load ChromaDB only when user enables semantic search
+        if use_semantic and chroma_collection is None:
+            with st.spinner("Loading semantic search model (first time may take 30-60 seconds)..."):
+                chroma_collection = load_chroma_collection()
+            if chroma_collection is None:
+                st.error("Failed to load semantic search. Using regular search instead.")
+                use_semantic = False
 
     colA, colB, colC = st.columns([3, 2, 1])
 
@@ -473,7 +495,8 @@ with tab_chat:
     st.write("Tell me what you're in the mood for, and I'll suggest a few classes.")
 
     if "recommender" not in st.session_state:
-        st.session_state.recommender = CourseRecommender()
+        with st.spinner("Loading chatbot AI model (first time may take 30-60 seconds)..."):
+            st.session_state.recommender = CourseRecommender()
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
