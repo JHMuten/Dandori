@@ -6,7 +6,8 @@ pdf_samples/
 # --- Python / Streamlit junk ---
 __pycache__/
 *.pyc
-.streamlit/
+# Note: .streamlit/config.toml is committed for Cloud Run
+.streamlit/secrets.toml
 
 # --- Environment ---
 .env
