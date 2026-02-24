@@ -1,1 +1,20 @@
-pdf-samples/
+pdf-samples/# --- Ignore large data/artifacts ---
+*.zip
+all_pdfs/
+all_pdfs/*.pdf
+all_pdfs/**/*.pdf
+all_pdfs/*.pkl
+all_pdfs/**/*.pkl
+
+# --- Python / Streamlit junk ---
+__pycache__/
+*.pyc
+.streamlit/
+
+# --- Environment ---
+.env
+.env.*
+
+# --- Virtual env ---
+venv/
+.venv/
