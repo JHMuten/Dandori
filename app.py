@@ -17,52 +17,134 @@ COUNT_Q_RE = re.compile(r"\b(how many|number of courses|total courses|total numb
 
 PRICE_BETWEEN_RE = re.compile(
     r"\b(?:between|from)\s*£?\s*(\d+(?:\.\d+)?)\s*(?:and|to|-)\s*£?\s*(\d+(?:\.\d+)?)\b",
-    re.I
+    re.I,
 )
 PRICE_RANGE_DASH_RE = re.compile(
     r"\b£?\s*(\d+(?:\.\d+)?)\s*[-–]\s*£?\s*(\d+(?:\.\d+)?)\b",
-    re.I
+    re.I,
 )
+
+# NEW: supports "£60 and above", "60+"
+PRICE_PLUS_RE = re.compile(r"(?:^|\s)£?\s*(\d+(?:\.\d+)?)\s*\+\s*(?:$|\b)", re.I)
+
+PRICE_NUM_AND_ABOVE_RE = re.compile(
+    r"\b£?\s*(\d+(?:\.\d+)?)\s*(?:\+|and\s+(?:above|over)|or\s+more)\b",
+    re.I,
+)
+
+PRICE_NUM_AND_BELOW_RE = re.compile(
+    r"\b£?\s*(\d+(?:\.\d+)?)\s*(?:and\s+(?:below|under)|or\s+less)\b",
+    re.I,
+)
+
+
+# Strict comparisons
+PRICE_AND_ABOVE_RE = re.compile(r"£?\s*(\d+(?:\.\d+)?)\s*(?:and\s+above|and\s+over)\b", re.I)
+
 PRICE_ABOVE_RE = re.compile(
-    r"\b(?:above|over|more than|greater than|at least|min(?:imum)?)\s*£?\s*(\d+(?:\.\d+)?)\b",
-    re.I
+    r"\b(?:above|over|more than|greater than)\s*£?\s*(\d+(?:\.\d+)?)\b",
+    re.I,
 )
 PRICE_BELOW_RE = re.compile(
-    r"\b(?:under|below|less than|at most|max(?:imum)?|up to)\s*£?\s*(\d+(?:\.\d+)?)\b",
-    re.I
+    r"\b(?:under|below|less than)\s*£?\s*(\d+(?:\.\d+)?)\b",
+    re.I,
 )
+
+# Inclusive comparisons
+PRICE_AT_LEAST_RE = re.compile(
+    r"\b(?:at least|min(?:imum)?)\s*£?\s*(\d+(?:\.\d+)?)\b",
+    re.I,
+)
+PRICE_AT_MOST_RE = re.compile(
+    r"\b(?:at most|max(?:imum)?|up to)\s*£?\s*(\d+(?:\.\d+)?)\b",
+    re.I,
+)
+
 PRICE_EXACT_RE = re.compile(
     r"\b(?:exactly|at)\s*£?\s*(\d+(?:\.\d+)?)\b",
-    re.I
+    re.I,
 )
+
+UNKNOWN_LOC_RE = re.compile(r"\b(?:in|located in|near)\s+([A-Za-z][A-Za-z\s\-']{2,})\b", re.I)
+
 
 def parse_price_filter(text: str):
     """
     Returns (mode, a, b)
-    mode in {"between", "above", "below", "exact"}.
+    mode in {"between", "above", "at_least", "below", "at_most", "exact"}.
     """
     t = text or ""
 
-    m = PRICE_BETWEEN_RE.search(t) or PRICE_RANGE_DASH_RE.search(t)
-    if m:
-        a = float(m.group(1))
-        b = float(m.group(2))
+    # Free
+    if re.search(r"\bfree\b", t, re.I):
+        return ("exact", 0.0, None)
+
+    # Between / ranges
+    m_between = PRICE_BETWEEN_RE.search(t) or PRICE_RANGE_DASH_RE.search(t)
+    if m_between:
+        a = float(m_between.group(1))
+        b = float(m_between.group(2))
         lo, hi = (a, b) if a <= b else (b, a)
         return ("between", lo, hi)
 
-    m = PRICE_ABOVE_RE.search(t)
-    if m:
-        return ("above", float(m.group(1)), None)
+    # "£60 and above" (number + and above)
+    m_and_above = PRICE_AND_ABOVE_RE.search(t)
+    if m_and_above:
+        return ("at_least", float(m_and_above.group(1)), None)
 
-    m = PRICE_BELOW_RE.search(t)
-    if m:
-        return ("below", float(m.group(1)), None)
+    # "£60+" or "60+"
+    m_plus = PRICE_PLUS_RE.search(t)
+    if m_plus:
+        return ("at_least", float(m_plus.group(1)), None)
 
-    m = PRICE_EXACT_RE.search(t)
-    if m:
-        return ("exact", float(m.group(1)), None)
+    # Other number-first forms
+    m_num_above = PRICE_NUM_AND_ABOVE_RE.search(t)
+    if m_num_above:
+        return ("at_least", float(m_num_above.group(1)), None)
+
+    m_num_below = PRICE_NUM_AND_BELOW_RE.search(t)
+    if m_num_below:
+        return ("at_most", float(m_num_below.group(1)), None)
+
+    # Phrase-first forms
+    m_at_least = PRICE_AT_LEAST_RE.search(t)
+    if m_at_least:
+        return ("at_least", float(m_at_least.group(1)), None)
+
+    m_above = PRICE_ABOVE_RE.search(t)
+    if m_above:
+        return ("above", float(m_above.group(1)), None)
+
+    m_at_most = PRICE_AT_MOST_RE.search(t)
+    if m_at_most:
+        return ("at_most", float(m_at_most.group(1)), None)
+
+    m_below = PRICE_BELOW_RE.search(t)
+    if m_below:
+        return ("below", float(m_below.group(1)), None)
+
+    m_exact = PRICE_EXACT_RE.search(t)
+    if m_exact:
+        return ("exact", float(m_exact.group(1)), None)
 
     return None
+
+
+def _format_price_phrase(mode: str, a: float, b: float | None):
+    if mode == "above":
+        return f"above **£{a:g}**"
+    if mode == "at_least":
+        return f"**£{a:g} and above**"
+    if mode == "below":
+        return f"below **£{a:g}**"
+    if mode == "at_most":
+        return f"**£{a:g} and below**"
+    if mode == "between":
+        return f"between **£{a:g} and £{b:g}**"
+    if mode == "exact":
+        return f"exactly **£{a:g}**"
+    return "that price"
+
 
 def handle_count_question(user_text: str, recommender: CourseRecommender):
     """
@@ -70,39 +152,47 @@ def handle_count_question(user_text: str, recommender: CourseRecommender):
     - total courses
     - courses in a location
     - courses above/under/between/exact £ threshold
+    - combined constraints (e.g., location AND price)
     """
     text = user_text or ""
     if not COUNT_Q_RE.search(text):
         return None
 
-    # 1) Price-based counts (most specific)
+    locs = recommender.extract_locations_from_text(text)
     parsed = parse_price_filter(text)
+
+
+# If it looks like the user specified a location, but we don't recognise it, don't return total.
+    m = UNKNOWN_LOC_RE.search(text)
+    if m and not locs:
+        unknown = m.group(1).strip()
+        # Optional: show a few valid locations as hints
+        examples = ", ".join(recommender.locations[:8]) if hasattr(recommender, "locations") else ""
+        hint = f" Here are some locations I *do* have: {examples}." if examples else ""
+        return f"I couldn’t find any courses in **{unknown}** in our dataset.{hint}"
+
+
+    loc_label = recommender.locations_label(locs) if locs else None
+    parsed = parse_price_filter(text)
+
+    # Combined (locations + price)
+    if locs and parsed:
+        mode, a, b = parsed
+        n = recommender.count_filtered(location=locs, price_mode=mode, a=a, b=b)
+        return f"There are **{n}** course(s) in **{loc_label}** priced {_format_price_phrase(mode, a, b)}."
+
+    # Price only
     if parsed:
         mode, a, b = parsed
+        n = recommender.count_filtered(price_mode=mode, a=a, b=b)
+        return f"There are **{n}** course(s) priced {_format_price_phrase(mode, a, b)}."
 
-        if mode == "above":
-            n = recommender.count_above_price(a)
-            return f"There are **{n}** course(s) priced **above £{a:g}**."
+    # Locations only
+    if locs:
+        n = recommender.count_filtered(location=locs)
+        return f"We currently have **{n}** course(s) listed in **{loc_label}**."
 
-        if mode == "below":
-            n = recommender.count_below_price(a)
-            return f"There are **{n}** course(s) priced **below £{a:g}**."
-
-        if mode == "between":
-            n = recommender.count_between_prices(a, b)
-            return f"There are **{n}** course(s) priced **between £{a:g} and £{b:g}**."
-
-        if mode == "exact":
-            n = recommender.count_exact_price(a)
-            return f"There are **{n}** course(s) priced **exactly £{a:g}**."
-
-    # 2) Location-based count
-    loc = recommender.extract_location_from_text(text)
-    if loc:
-        n = recommender.count_in_location(loc)
-        return f"We currently have **{n}** course(s) listed in **{loc}**."
-
-    # 3) Total count
+    # Total
     n = recommender.total_courses()
     return f"We currently have **{n}** courses in our catalogue."
 
@@ -429,8 +519,30 @@ with tab_chat:
             st.rerun()
 
         # Normal RAG flow
-        recs = st.session_state.recommender.retrieve(user_msg, n_results=8)
-        reply = st.session_state.recommender.respond(user_msg, recs)
+        recommender = st.session_state.recommender
+
+        locs = recommender.extract_locations_from_text(user_msg)
+        parsed_price = parse_price_filter(user_msg)
+        has_location = bool(locs)
+        has_budget = bool(parsed_price)
+
+        recs = recommender.retrieve(user_msg, n_results=8)
+
+        # Deterministic fallback when vector retrieval returns nothing
+        if not recs:
+            recs = recommender.fallback_search(
+                query=user_msg,
+                locations=locs if locs else None,
+                price_filter=parsed_price,
+                limit=8,
+            )
+
+        reply = recommender.respond_smart(
+            user_query=user_msg,
+            recs=recs,
+            has_location=has_location,
+            has_budget=has_budget,
+        )
 
         st.session_state.messages.append({
             "role": "assistant",
