@@ -30,6 +30,12 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '1'
+      - '--max-instances'
+      - '3'
       - '--set-env-vars'
       - 'HF_TOKEN=$_HF_TOKEN'
     secretEnv: ['HF_TOKEN']
