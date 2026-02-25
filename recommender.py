@@ -75,10 +75,11 @@ class CourseRecommender:
         local_model_name: str = "all-MiniLM-L6-v2",
         gemini_model: str = "gemini-2.5-flash",
     ):
+        load_dotenv()
+
         # -----------------------
         # Configure Gemini
         # -----------------------
-        load_dotenv()
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found. Set it in your environment or .env file.")
@@ -386,6 +387,18 @@ class CourseRecommender:
     # E) Deterministic fallback retrieval
     # ---------------------------
 
+    def format_recommendations(self, recs: List[CourseResult], limit: int = 5) -> str:
+        if not recs:
+            return "I couldn’t find any matching courses."
+
+        lines = ["Here are a few options:"]
+        for r in recs[:limit]:
+            lines.append(
+                f"- **{r.title}** (📍 {r.location}, 💷 {r.cost_gbp}, 🆔 {r.class_id})"
+            )
+        return "\n".join(lines)
+
+
     def fallback_search(
         self,
         query: str,
@@ -466,6 +479,7 @@ class CourseRecommender:
     def respond(self, user_query: str, recs: List[CourseResult]) -> str:
         """
         Uses Gemini to generate a friendly response based on retrieved matches.
+        If Gemini fails (model not available / API error), fall back to deterministic formatting.
         """
         if not recs:
             return (
@@ -475,45 +489,37 @@ class CourseRecommender:
 
         context_lines = []
         for r in recs:
-            # Include distance if available
-            distance_info = ""
-            if r.distance_miles is not None:
-                distance_info = f" | distance={r.distance_miles:.1f} miles"
-            
             context_lines.append(
                 f"- {r.title} | id={r.class_id} | location={r.location} | type={r.course_type} | "
-                f"instructor={r.instructor} | cost={r.cost_gbp}{distance_info}"
+                f"instructor={r.instructor} | cost={r.cost_gbp}"
             )
 
         prompt = f"""
-You are the School of Dandori Course Chatbot.
+    You are the School of Dandori Course Chatbot.
 
-Rules:
-- Only recommend courses that appear in the provided matches.
-- Do NOT list course details (title, location, price, ID) in your response - they will be shown separately in cards below your message.
-- Instead, provide a brief, friendly introduction (1-2 sentences) about the courses found.
-- If distance information is provided, you can mention proximity (e.g., "I found some lovely options nearby").
-- If the user request is missing key info (like location or budget), ask ONE follow-up question.
-- Keep the tone warm and playful but concise.
-- Focus on the vibe/theme of the courses rather than listing them.
+    Rules:
+    - Only recommend courses that appear in the provided matches.
+    - Do not invent details (dates, prerequisites, materials) unless explicitly in the match line.
+    - If the user request is missing key info (like location or budget), ask ONE follow-up question.
+    - Provide 3-5 suggestions maximum.
+    - Keep the tone warm and playful but concise.
 
-User request:
-{user_query}
+    User request:
+    {user_query}
 
-Matches:
-{chr(10).join(context_lines)}
+    Matches:
+    {chr(10).join(context_lines)}
 
-Write a brief, friendly response (1-2 sentences max) introducing the courses without listing their details:
-"""
+    Write the reply:
+    """
 
         try:
-            response = self.client.models.generate_content(
-                model=self.gemini_model,
-                contents=prompt
-            )
-            return response.text.strip() if response.text else "Sorry — I ran into an issue generating a reply."
-        except Exception as e:
-            return f"Sorry — I ran into an error generating a reply: {e}"
+            out = self.model.generate_content(prompt)
+            txt = (out.text or "").strip()
+            return txt if txt else self.format_recommendations(recs)
+        except Exception:
+            # Do NOT leak Gemini errors to the user
+            return self.format_recommendations(recs)
 
     def respond_smart(self, user_query: str, recs: List[CourseResult], has_location: bool, has_budget: bool) -> str:
         """
