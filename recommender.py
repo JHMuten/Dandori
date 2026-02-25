@@ -5,8 +5,11 @@ from typing import Optional, List, Dict, Any, Tuple, Union
 
 import pandas as pd
 import chromadb
+from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
+
+from grounding import PERSIST_DIR, COLLECTION_NAME
 
 
 # ---------------------------
@@ -43,7 +46,7 @@ class CourseRecommender:
         persist_dir: str = PERSIST_DIR,
         collection_name: str = COLLECTION_NAME,
         local_model_name: str = "all-MiniLM-L6-v2",
-        gemini_model: str = "gemini-1.5-flash",
+        gemini_model: str = "gemini-2.5-flash",
     ):
         # -----------------------
         # Configure Gemini
@@ -52,8 +55,8 @@ class CourseRecommender:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found. Set it in your environment or .env file.")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(gemini_model)
+        self.client = genai.Client(api_key=api_key)
+        self.gemini_model = gemini_model
 
         # -----------------------
         # Load and normalise dataset
@@ -78,8 +81,22 @@ class CourseRecommender:
         self.locations = sorted([x for x in self.df.get("location", pd.Series([], dtype=str)).unique().tolist() if x])
 
         # --- Chroma persistent client ---
-        self.client = chromadb.PersistentClient(path=chroma_dir)
-        self.collection = self.client.get_or_create_collection(name=chroma_collection)
+        self.chroma_client = chromadb.PersistentClient(path=persist_dir)
+        
+        # Get HF token from environment for embeddings
+        hf_token = os.getenv("HF_TOKEN")
+        if hf_token:
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        
+        embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=local_model_name,
+            device="cpu"
+        )
+        
+        self.collection = self.chroma_client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_fn
+        )
 
     # ---------------------------
     # Deterministic utilities
@@ -259,19 +276,20 @@ class CourseRecommender:
             include=["metadatas", "distances"],
         )
 
+        ids = (res.get("ids") or [[]])[0]
         metadatas = (res.get("metadatas") or [[]])[0]
         distances = (res.get("distances") or [[]])[0]
 
         results: List[CourseResult] = []
-        for md, dist in zip(metadatas, distances):
+        for doc_id, md, dist in zip(ids, metadatas, distances):
             if not md:
                 continue
             results.append(
                 CourseResult(
-                    class_id=str(md.get("class_id", "")),
+                    class_id=str(doc_id),  # ID is stored as document ID, not in metadata
                     title=str(md.get("title", "")),
                     location=str(md.get("location", "")),
-                    course_type=str(md.get("course_type", "")),
+                    course_type=str(md.get("type", "")),  # Stored as "type" in grounding.py
                     instructor=str(md.get("instructor", "")),
                     cost_gbp=self._coerce_cost_display(md),
                     distance=float(dist) if dist is not None else 0.0,
@@ -397,8 +415,11 @@ Write the reply:
 """
 
         try:
-            out = self.model.generate_content(prompt)
-            return (out.text or "").strip() or "Sorry — I ran into an issue generating a reply."
+            response = self.client.models.generate_content(
+                model=self.gemini_model,
+                contents=prompt
+            )
+            return response.text.strip() if response.text else "Sorry — I ran into an issue generating a reply."
         except Exception as e:
             return f"Sorry — I ran into an error generating a reply: {e}"
 

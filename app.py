@@ -625,12 +625,12 @@ with tab_chat:
             with st.spinner("Loading chatbot AI model (first time may take 30-60 seconds)..."):
                 st.session_state.recommender = CourseRecommender()
         except Exception as e:
+            st.error(f"Failed to initialize chatbot: {str(e)}")
+            st.code(f"Error type: {type(e).__name__}\nDetails: {str(e)}")
             if "429" in str(e) or "Too Many Requests" in str(e):
-                st.error("⚠️ Hugging Face rate limit exceeded. Chatbot temporarily unavailable.")
+                st.info("⚠️ Hugging Face rate limit exceeded. Please try again in a few minutes.")
                 st.info("💡 Tip: Set HF_TOKEN in your environment to get higher rate limits.")
-                st.info("Please try again in a few minutes or use the Search tab instead.")
-            else:
-                st.error(f"Failed to initialize chatbot: {str(e)}")
+            st.info("Please try again in a few minutes or use the Search tab instead.")
             st.session_state.recommender = None
 
     if "messages" not in st.session_state:
@@ -638,23 +638,68 @@ with tab_chat:
             {"role": "assistant", "content": "Hey! What kind of class are you looking for today?"}
         ]
 
+    # Initialize carousel index for each message if not present
+    if "carousel_indices" not in st.session_state:
+        st.session_state.carousel_indices = {}
+
     # Render chat history (and matches inside assistant messages)
-    for m in st.session_state.messages:
+    for msg_idx, m in enumerate(st.session_state.messages):
         with st.chat_message(m["role"]):
             st.write(m["content"])
 
             if m["role"] == "assistant" and "recs" in m and m["recs"]:
-                st.markdown("### Matches I used")
-                for r in m["recs"]:
-                    with st.container(border=True):
-                        st.markdown(f"**{r['title']}**")
-                        cost = r.get('cost_gbp')
-                        try:
-                            cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
-                        except (ValueError, TypeError):
-                            cost_display = f"£{cost}" if cost else "Unknown"
-                        st.markdown(f"📍 {r['location']} • 💷 {cost_display} • 📚 {r['course_type']}")
-                        st.markdown(f"👤 {r['instructor']} • 🆔 {r['class_id']}")
+                recs = m["recs"]
+                num_recs = len(recs)
+                
+                if num_recs == 0:
+                    continue
+                
+                # Initialize carousel index for this message
+                carousel_key = f"carousel_{msg_idx}"
+                if carousel_key not in st.session_state.carousel_indices:
+                    st.session_state.carousel_indices[carousel_key] = 0
+                
+                current_idx = st.session_state.carousel_indices[carousel_key]
+                
+                # Show up to 4 courses at a time
+                courses_per_page = 4
+                total_pages = math.ceil(num_recs / courses_per_page)
+                start_idx = current_idx * courses_per_page
+                end_idx = min(start_idx + courses_per_page, num_recs)
+                visible_recs = recs[start_idx:end_idx]
+                
+                # Navigation controls (only if more than 4 courses)
+                if num_recs > courses_per_page:
+                    col_left, col_center, col_right = st.columns([1, 6, 1])
+                    
+                    with col_left:
+                        if st.button("◀", key=f"prev_{msg_idx}", disabled=(current_idx == 0)):
+                            st.session_state.carousel_indices[carousel_key] = max(0, current_idx - 1)
+                            st.rerun()
+                    
+                    with col_center:
+                        st.markdown(f"<div style='text-align: center;'>Showing {start_idx + 1}-{end_idx} of {num_recs} courses</div>", unsafe_allow_html=True)
+                    
+                    with col_right:
+                        if st.button("▶", key=f"next_{msg_idx}", disabled=(current_idx >= total_pages - 1)):
+                            st.session_state.carousel_indices[carousel_key] = min(total_pages - 1, current_idx + 1)
+                            st.rerun()
+                
+                # Display courses in horizontal layout
+                cols = st.columns(len(visible_recs))
+                for col_idx, (col, r) in enumerate(zip(cols, visible_recs)):
+                    with col:
+                        with st.container(border=True):
+                            st.markdown(f"**{r['title']}**")
+                            cost = r.get('cost_gbp')
+                            try:
+                                cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
+                            except (ValueError, TypeError):
+                                cost_display = f"£{cost}" if cost else "Unknown"
+                            st.markdown(f"📍 {r['location']}")
+                            st.markdown(f"💷 {cost_display}")
+                            st.markdown(f"📚 {r['course_type']}")
+                            st.caption(f"🆔 {r['class_id']}")
 
     # ✅ chat_input MUST be last
     user_msg = st.chat_input("e.g. Something creative in Yorkshire under £80…")
