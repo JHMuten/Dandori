@@ -875,17 +875,64 @@ with tab_chat:
         
         # Show a spinner while processing
         with st.spinner("Thinking..."):
+            # Helper function to update stateful context
+            def update_context(user_msg: str, recommender: CourseRecommender):
+                ctx = st.session_state.chat_context
+
+                # Extract structured info
+                locs = recommender.extract_locations_from_text(user_msg)
+                price = parse_price_filter(user_msg)
+
+                # Overwrite if new info provided
+                if locs:
+                    ctx["locations"] = locs
+
+                if price:
+                    ctx["price_filter"] = price
+
+                # Handle "instead" logic (location swap but keep budget)
+                if "instead" in user_msg.lower() and locs:
+                    ctx["locations"] = locs
+
+                st.session_state.chat_context = ctx
+
+            # Check for out of scope queries
+            if is_out_of_scope(user_msg):
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": (
+                        "I'm mainly here to help you explore Dandori courses.\n\n"
+                        "Try something like:\n"
+                        "- "Recommend me something creative in Brighton under £80"\n"
+                        "- "How many courses are £60 and above in York?""
+                    )
+                })
+                st.rerun()
+            
+            # Small talk short-circuit (don't run retrieval)
+            if SMALLTALK_RE.search(user_msg or ""):
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "Hey! 👋 Tell me what kind of class you're looking for — location and budget help too."
+                })
+                st.rerun()
+
             # Deterministic count handling
             answer = handle_count_question(user_msg, st.session_state.recommender)
             if answer is not None:
                 st.session_state.messages.append({"role": "assistant", "content": answer})
                 st.rerun()
 
-            # Normal RAG flow
+            # Normal RAG flow with stateful context
             recommender = st.session_state.recommender
-
-            locs = recommender.extract_locations_from_text(user_msg)
-            parsed_price = parse_price_filter(user_msg)
+            
+            # Update context with new information from user message
+            update_context(user_msg, recommender)
+            ctx = st.session_state.chat_context
+            
+            # Use context (remembers previous location/budget)
+            locs = ctx["locations"]
+            parsed_price = ctx["price_filter"]
             has_location = bool(locs)
             has_budget = bool(parsed_price)
 
