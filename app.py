@@ -903,8 +903,8 @@ with tab_chat:
                     "content": (
                         "I'm mainly here to help you explore Dandori courses.\n\n"
                         "Try something like:\n"
-                        "- "Recommend me something creative in Brighton under £80"\n"
-                        "- "How many courses are £60 and above in York?""
+                        "- \"Recommend me something creative in Brighton under £80\"\n"
+                        "- \"How many courses are £60 and above in York?\""
                     )
                 })
                 st.rerun()
