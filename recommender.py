@@ -489,9 +489,14 @@ class CourseRecommender:
 
         context_lines = []
         for r in recs:
+            # Include distance if available
+            distance_info = ""
+            if r.distance_miles is not None:
+                distance_info = f" | distance={r.distance_miles:.1f} miles"
+            
             context_lines.append(
                 f"- {r.title} | id={r.class_id} | location={r.location} | type={r.course_type} | "
-                f"instructor={r.instructor} | cost={r.cost_gbp}"
+                f"instructor={r.instructor} | cost={r.cost_gbp}{distance_info}"
             )
 
         prompt = f"""
@@ -499,10 +504,12 @@ class CourseRecommender:
 
     Rules:
     - Only recommend courses that appear in the provided matches.
-    - Do not invent details (dates, prerequisites, materials) unless explicitly in the match line.
+    - Do NOT list course details (title, location, price, ID) in your response - they will be shown separately in cards below your message.
+    - Instead, provide a brief, friendly introduction (1-2 sentences) about the courses found.
+    - If distance information is provided, you can mention proximity (e.g., "I found some lovely options nearby").
     - If the user request is missing key info (like location or budget), ask ONE follow-up question.
-    - Provide 3-5 suggestions maximum.
     - Keep the tone warm and playful but concise.
+    - Focus on the vibe/theme of the courses rather than listing them.
 
     User request:
     {user_query}
@@ -510,13 +517,15 @@ class CourseRecommender:
     Matches:
     {chr(10).join(context_lines)}
 
-    Write the reply:
+    Write a brief, friendly response (1-2 sentences max) introducing the courses without listing their details:
     """
 
         try:
-            out = self.model.generate_content(prompt)
-            txt = (out.text or "").strip()
-            return txt if txt else self.format_recommendations(recs)
+            response = self.client.models.generate_content(
+                model=self.gemini_model,
+                contents=prompt
+            )
+            return response.text.strip() if response.text else self.format_recommendations(recs)
         except Exception:
             # Do NOT leak Gemini errors to the user
             return self.format_recommendations(recs)
