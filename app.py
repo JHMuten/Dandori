@@ -641,6 +641,10 @@ with tab_chat:
     # Initialize carousel index for each message if not present
     if "carousel_indices" not in st.session_state:
         st.session_state.carousel_indices = {}
+    
+    # Initialize expanded course tracking for chatbot
+    if "chatbot_expanded" not in st.session_state:
+        st.session_state.chatbot_expanded = {}
 
     # Render chat history (and matches inside assistant messages)
     for msg_idx, m in enumerate(st.session_state.messages):
@@ -660,6 +664,69 @@ with tab_chat:
                     st.session_state.carousel_indices[carousel_key] = 0
                 
                 current_idx = st.session_state.carousel_indices[carousel_key]
+                
+                # Check if any course is expanded for this message
+                expanded_key = f"expanded_{msg_idx}"
+                expanded_course_idx = st.session_state.chatbot_expanded.get(expanded_key, None)
+                
+                # If a course is expanded, show only that one
+                if expanded_course_idx is not None and 0 <= expanded_course_idx < num_recs:
+                    r = recs[expanded_course_idx]
+                    
+                    # Get full course details from dataframe
+                    course_match = df[df["class_id"] == r["class_id"]]
+                    if not course_match.empty:
+                        course = course_match.iloc[0].to_dict()
+                        
+                        with st.container(border=True):
+                            col_header, col_button = st.columns([5, 1])
+                            with col_header:
+                                st.markdown(f"### {course['title']}")
+                            with col_button:
+                                if st.button("← Back", key=f"back_chat_{msg_idx}"):
+                                    st.session_state.chatbot_expanded[expanded_key] = None
+                                    st.rerun()
+                            
+                            col_a, col_b = st.columns([2, 1])
+                            with col_a:
+                                st.markdown(f"**Instructor:** {course.get('instructor','') or 'Unknown'}")
+                                st.markdown(f"**Location:** 📍 {course.get('location','') or 'Unknown'}")
+                                st.markdown(f"**Course Type:** 📚 {course.get('course_type','') or 'Unknown'}")
+                                cost = course.get("cost_gbp", None)
+                                cost_display = f"£{cost:.2f}" if pd.notna(cost) else "Unknown"
+                                st.markdown(f"**Cost:** 💷 {cost_display}")
+                            with col_b:
+                                st.markdown(f"**Class ID:** {course['class_id']}")
+                            
+                            st.markdown("---")
+                            st.markdown("**Description:**")
+                            st.write(course.get("description", ""))
+                            
+                            st.markdown("---")
+                            c1, c2, c3 = st.columns(3)
+                            
+                            def render_list_or_text(val):
+                                if isinstance(val, list):
+                                    if not val:
+                                        st.write("—")
+                                    else:
+                                        for item in val:
+                                            st.markdown(f"- {item}")
+                                else:
+                                    st.write(val if val else "—")
+                            
+                            with c1:
+                                st.markdown("**Learning Objectives:**")
+                                render_list_or_text(course.get("learning_objectives", []))
+                            
+                            with c2:
+                                st.markdown("**Skills Developed:**")
+                                render_list_or_text(course.get("skills_developed", []))
+                            
+                            with c3:
+                                st.markdown("**Provided Materials:**")
+                                render_list_or_text(course.get("provided_materials", []))
+                    continue
                 
                 # Show up to 4 courses at a time
                 courses_per_page = 4
@@ -689,17 +756,58 @@ with tab_chat:
                 cols = st.columns(len(visible_recs))
                 for col_idx, (col, r) in enumerate(zip(cols, visible_recs)):
                     with col:
-                        with st.container(border=True):
-                            st.markdown(f"**{r['title']}**")
-                            cost = r.get('cost_gbp')
-                            try:
-                                cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
-                            except (ValueError, TypeError):
-                                cost_display = f"£{cost}" if cost else "Unknown"
-                            st.markdown(f"📍 {r['location']}")
-                            st.markdown(f"💷 {cost_display}")
-                            st.markdown(f"📚 {r['course_type']}")
-                            st.caption(f"🆔 {r['class_id']}")
+                        # Highlight first result as best match
+                        is_best_match = (start_idx + col_idx == 0)
+                        
+                        # Use custom styling for best match
+                        if is_best_match:
+                            st.markdown(
+                                """
+                                <style>
+                                .best-match-container {
+                                    border: 2px solid #4CAF50 !important;
+                                    background-color: rgba(76, 175, 80, 0.1);
+                                    border-radius: 8px;
+                                    padding: 12px;
+                                }
+                                </style>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                            with st.container(border=True):
+                                st.markdown("🏆 **BEST MATCH**", help="This course best matches your query")
+                                st.markdown(f"**{r['title']}**")
+                                cost = r.get('cost_gbp')
+                                try:
+                                    cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
+                                except (ValueError, TypeError):
+                                    cost_display = f"£{cost}" if cost else "Unknown"
+                                st.markdown(f"📍 {r['location']}")
+                                st.markdown(f"💷 {cost_display}")
+                                st.markdown(f"📚 {r['course_type']}")
+                                st.caption(f"🆔 {r['class_id']}")
+                                
+                                # More Details button
+                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}"):
+                                    st.session_state.chatbot_expanded[expanded_key] = start_idx + col_idx
+                                    st.rerun()
+                        else:
+                            with st.container(border=True):
+                                st.markdown(f"**{r['title']}**")
+                                cost = r.get('cost_gbp')
+                                try:
+                                    cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
+                                except (ValueError, TypeError):
+                                    cost_display = f"£{cost}" if cost else "Unknown"
+                                st.markdown(f"📍 {r['location']}")
+                                st.markdown(f"💷 {cost_display}")
+                                st.markdown(f"📚 {r['course_type']}")
+                                st.caption(f"🆔 {r['class_id']}")
+                                
+                                # More Details button
+                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}"):
+                                    st.session_state.chatbot_expanded[expanded_key] = start_idx + col_idx
+                                    st.rerun()
 
     # ✅ chat_input MUST be last
     user_msg = st.chat_input("e.g. Something creative in Yorkshire under £80…")
