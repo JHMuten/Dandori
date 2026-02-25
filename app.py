@@ -25,10 +25,10 @@ PRICE_RANGE_DASH_RE = re.compile(
 )
 
 # NEW: supports "£60 and above", "60+"
-PRICE_PLUS_RE = re.compile(r"(?:^|\s)£?\s*(\d+(?:\.\d+)?)\s*\+\s*(?:$|\b)", re.I)
+PRICE_PLUS_RE = re.compile(r"(?:^|\s)£?\s*(\d+(?:\.\d+)?)\s*\+\s*(?=$|[^\w])", re.I)
 
 PRICE_NUM_AND_ABOVE_RE = re.compile(
-    r"\b£?\s*(\d+(?:\.\d+)?)\s*(?:\+|and\s+(?:above|over)|or\s+more)\b",
+    r"\b£?\s*(\d+(?:\.\d+)?)\s*(?:\+|and\s+(?:above|over)|or\s+more)\s*(?=$|[^\w])",
     re.I,
 )
 
@@ -144,6 +144,35 @@ def _format_price_phrase(mode: str, a: float, b: float | None):
     if mode == "exact":
         return f"exactly **£{a:g}**"
     return "that price"
+
+
+COURSE_INTENT_RE = re.compile(
+    r"\b(course|courses|class|classes|workshop|workshops|learn|session|dandori)\b",
+    re.I,
+)
+
+SMALLTALK_RE = re.compile(
+    r"\b(hi|hello|hey|thanks|thank you|what do you suggest)\b",
+    re.I,
+)
+
+def is_out_of_scope(text: str) -> bool:
+    t = text or ""
+
+    # Allow clear course intent
+    if COURSE_INTENT_RE.search(t):
+        return False
+
+    # Allow small talk
+    if SMALLTALK_RE.search(t):
+        return False
+
+    # Allow counting queries (already handled separately)
+    if COUNT_Q_RE.search(t):
+        return False
+
+    # Otherwise, treat as out of scope
+    return True
 
 
 def handle_count_question(user_text: str, recommender: CourseRecommender):
@@ -511,6 +540,28 @@ with tab_chat:
 
     if user_msg:
         st.session_state.messages.append({"role": "user", "content": user_msg})
+
+        
+        if is_out_of_scope(user_msg):
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": (
+                    "I’m mainly here to help you explore Dandori courses.\n\n"
+                    "Try something like:\n"
+                    "- “Recommend me something creative in Brighton under £80”\n"
+                    "- “How many courses are £60 and above in York?”"
+                )
+            })
+            st.rerun()
+        
+        # Small talk short-circuit (don't run retrieval)
+        if SMALLTALK_RE.search(user_msg or ""):
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "Hey! 👋 Tell me what kind of class you’re looking for — location and budget help too."
+            })
+            st.rerun()
+
 
         # Deterministic count handling
         answer = handle_count_question(user_msg, st.session_state.recommender)

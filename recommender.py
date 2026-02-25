@@ -50,7 +50,8 @@ class CourseRecommender:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found. Set it in your environment or .env file.")
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash")
+        self.model = genai.GenerativeModel(model_name)
 
         # --- Load dataframe ---
         self.courses_pkl = courses_pkl
@@ -278,6 +279,18 @@ class CourseRecommender:
     # E) Deterministic fallback retrieval
     # ---------------------------
 
+    def format_recommendations(self, recs: List[CourseResult], limit: int = 5) -> str:
+        if not recs:
+            return "I couldn’t find any matching courses."
+
+        lines = ["Here are a few options:"]
+        for r in recs[:limit]:
+            lines.append(
+                f"- **{r.title}** (📍 {r.location}, 💷 {r.cost_gbp}, 🆔 {r.class_id})"
+            )
+        return "\n".join(lines)
+
+
     def fallback_search(
         self,
         query: str,
@@ -358,6 +371,7 @@ class CourseRecommender:
     def respond(self, user_query: str, recs: List[CourseResult]) -> str:
         """
         Uses Gemini to generate a friendly response based on retrieved matches.
+        If Gemini fails (model not available / API error), fall back to deterministic formatting.
         """
         if not recs:
             return (
@@ -373,29 +387,31 @@ class CourseRecommender:
             )
 
         prompt = f"""
-You are the School of Dandori Course Chatbot.
+    You are the School of Dandori Course Chatbot.
 
-Rules:
-- Only recommend courses that appear in the provided matches.
-- Do not invent details (dates, prerequisites, materials) unless explicitly in the match line.
-- If the user request is missing key info (like location or budget), ask ONE follow-up question.
-- Provide 3-5 suggestions maximum.
-- Keep the tone warm and playful but concise.
+    Rules:
+    - Only recommend courses that appear in the provided matches.
+    - Do not invent details (dates, prerequisites, materials) unless explicitly in the match line.
+    - If the user request is missing key info (like location or budget), ask ONE follow-up question.
+    - Provide 3-5 suggestions maximum.
+    - Keep the tone warm and playful but concise.
 
-User request:
-{user_query}
+    User request:
+    {user_query}
 
-Matches:
-{chr(10).join(context_lines)}
+    Matches:
+    {chr(10).join(context_lines)}
 
-Write the reply:
-"""
+    Write the reply:
+    """
 
         try:
             out = self.model.generate_content(prompt)
-            return (out.text or "").strip() or "Sorry — I ran into an issue generating a reply."
-        except Exception as e:
-            return f"Sorry — I ran into an error generating a reply: {e}"
+            txt = (out.text or "").strip()
+            return txt if txt else self.format_recommendations(recs)
+        except Exception:
+            # Do NOT leak Gemini errors to the user
+            return self.format_recommendations(recs)
 
     def respond_smart(self, user_query: str, recs: List[CourseResult], has_location: bool, has_budget: bool) -> str:
         """
