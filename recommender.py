@@ -1,221 +1,420 @@
-from __future__ import annotations
-
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 import pandas as pd
 import chromadb
-from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
-from google import genai
-
-PERSIST_DIR = "data/courses_db"
-COLLECTION_NAME = "course_catalog"
-
-_BUDGET_RE = re.compile(r"(?:under|below|less than|<=?)\s*£?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+import google.generativeai as genai
 
 
-def parse_budget_gbp(text: str) -> Optional[float]:
-    m = _BUDGET_RE.search(text or "")
-    return float(m.group(1)) if m else None
-
+# ---------------------------
+# Helpers / Models
+# ---------------------------
 
 @dataclass
-class Recommendation:
+class CourseResult:
     class_id: str
     title: str
     location: str
-    instructor: str
     course_type: str
-    cost_gbp: Any
-    distance: Optional[float] = None
+    instructor: str
+    cost_gbp: str  # keep as display string
+    distance: float = 0.0
 
+
+# ---------------------------
+# Course Recommender
+# ---------------------------
 
 class CourseRecommender:
+    """
+    Loads course data, provides:
+      - deterministic counting/filtering (for "how many..." questions)
+      - semantic retrieval via Chroma
+      - deterministic fallback retrieval if semantic retrieval returns nothing
+      - LLM response generation
+    """
+
     def __init__(
         self,
+        dataset_path: str = "data/courses.pkl",
         persist_dir: str = PERSIST_DIR,
         collection_name: str = COLLECTION_NAME,
         local_model_name: str = "all-MiniLM-L6-v2",
-        gemini_model: str = "gemini-2.5-flash",
-        dataset_path: str = "data/courses.pkl",
+        gemini_model: str = "gemini-1.5-flash",
     ):
         # -----------------------
-        # Load dataset (for deterministic counts)
-        # -----------------------
-        self.df = pd.read_pickle(dataset_path)
-        self.df["class_id"] = self.df["class_id"].astype(str)
-        self.df = self.df.drop_duplicates(subset=["class_id"], keep="last").reset_index(drop=True)
-
-        # Known locations for simple extraction
-        self.known_locations = sorted(
-            {str(x).strip() for x in self.df.get("location", pd.Series([])).dropna().unique() if str(x).strip()}
-        )
-
-        # -----------------------
-        # Local embeddings (must match grounding.py)
-        # -----------------------
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=local_model_name,
-            device="cpu"  # Explicitly use CPU for lower memory usage
-        )
-        client = chromadb.PersistentClient(path=persist_dir)
-        self.collection = client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=self.embedding_fn,
-        )
-
-        # -----------------------
-        # Gemini (dotenv)
+        # Configure Gemini
         # -----------------------
         load_dotenv()
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY not found. Put it in your .env file.")
-        self.gemini = genai.Client(api_key=api_key)
-        self.gemini_model = gemini_model
+            raise ValueError("GEMINI_API_KEY not found. Set it in your environment or .env file.")
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(gemini_model)
 
-    # -----------------------
-    # Deterministic helpers
-    # -----------------------
-    def total_courses(self) -> int:
-        # True total (unique class_id)
-        return int(len(self.df))
+        # -----------------------
+        # Load and normalise dataset
+        # -----------------------
+        self.dataset_path = dataset_path
+        self.df = pd.read_pickle(self.dataset_path).copy()
 
-    def count_in_location(self, location: str) -> int:
-        loc = (location or "").strip().lower()
-        if "location" not in self.df.columns:
-            return 0
-        return int((self.df["location"].fillna("").str.strip().str.lower() == loc).sum())
+        # Normalize class_id
+        if "class_id" in self.df.columns:
+            self.df["class_id"] = self.df["class_id"].astype(str)
+            self.df = self.df.drop_duplicates(subset=["class_id"], keep="last").reset_index(drop=True)
 
-    def extract_location_from_text(self, text: str) -> Optional[str]:
-        t = (text or "").lower()
-        for loc in self.known_locations:
-            if loc.lower() in t:
-                return loc
-        return None
+        # Text columns safety
+        for c in ["title", "description", "location", "course_type", "instructor"]:
+            if c in self.df.columns:
+                self.df[c] = self.df[c].fillna("")
+
+        # Ensure a stable numeric cost field for filtering
+        self._ensure_cost_num()
+
+        # --- Locations for quick extraction ---
+        self.locations = sorted([x for x in self.df.get("location", pd.Series([], dtype=str)).unique().tolist() if x])
+
+        # --- Chroma persistent client ---
+        self.client = chromadb.PersistentClient(path=chroma_dir)
+        self.collection = self.client.get_or_create_collection(name=chroma_collection)
+
+    # ---------------------------
+    # Deterministic utilities
+    # ---------------------------
 
     def _ensure_cost_num(self) -> None:
         """
-        Ensure a numeric cost column exists for price-based counting.
-        This also protects you from Streamlit holding an older recommender instance.
+        Ensures self.df has a numeric 'cost_num' column for robust filtering.
+        Handles strings like '£60', '60', 'Free', '£50–£80', etc.
+        For ranges, uses the lower bound as a pragmatic numeric proxy for filtering.
         """
         if "cost_num" in self.df.columns:
             return
 
-        # Prefer cost_gbp, but tolerate missing column
         if "cost_gbp" not in self.df.columns:
-            self.df["cost_num"] = pd.Series([pd.NA] * len(self.df))
+            self.df["cost_num"] = pd.NA
             return
 
-        self.df["cost_num"] = (
-            self.df["cost_gbp"]
-            .astype(str)
-            .str.replace("£", "", regex=False)
-            .str.strip()
-        )
-        self.df["cost_num"] = pd.to_numeric(self.df["cost_num"], errors="coerce")
+        s = self.df["cost_gbp"].astype(str).fillna("").str.strip()
 
-    def count_above_price(self, price: float) -> int:
-        self._ensure_cost_num()
-        return int((self.df["cost_num"] > float(price)).sum())
+        # Common free patterns
+        free_mask = s.str.match(r"^(free|£?0(\.0+)?|no charge)$", case=False, na=False)
 
-    def count_below_price(self, price: float) -> int:
-        self._ensure_cost_num()
-        return int((self.df["cost_num"] < float(price)).sum())
+        # Extract any numbers (including decimals)
+        nums = s.str.findall(r"\d+(?:\.\d+)?")
 
-    def count_between_prices(self, lo: float, hi: float) -> int:
-        self._ensure_cost_num()
-        lo, hi = float(lo), float(hi)
-        return int(((self.df["cost_num"] >= lo) & (self.df["cost_num"] <= hi)).sum())
+        def to_num(x: List[str]) -> Optional[float]:
+            if not x:
+                return None
+            try:
+                return float(x[0])  # lower bound proxy if multiple numbers exist
+            except Exception:
+                return None
 
-    def count_exact_price(self, price: float) -> int:
-        self._ensure_cost_num()
-        return int((self.df["cost_num"] == float(price)).sum())
+        cost_num = nums.apply(to_num)
+        cost_num = pd.to_numeric(cost_num, errors="coerce")
+        cost_num[free_mask] = 0.0
 
-    # -----------------------
-    # Retrieval (local embeddings)
-    # -----------------------
-    def retrieve(self, user_query: str, n_results: int = 8) -> List[Recommendation]:
-        if not user_query or not user_query.strip():
+        self.df["cost_num"] = cost_num
+
+    def total_courses(self) -> int:
+        return int(len(self.df))
+
+    # ---------------------------
+    # Location extraction (single + multi)
+    # ---------------------------
+
+    def extract_locations_from_text(self, text: str) -> List[str]:
+        """
+        Returns ALL locations mentioned in the text.
+        Works for:
+            - "Brighton and York"
+            - "Brighton, York, Bath"
+            - "near Brighton / York"
+        Handles any number of locations.
+        """
+        if not text:
             return []
 
-        # Optional: budget filter from natural language ("under £80")
-        max_budget = parse_budget_gbp(user_query)
+        t = text.lower()
+        matches: List[str] = []
 
+        # Prefer longest first to avoid partial overlaps
+        for loc in sorted(self.locations, key=len, reverse=True):
+            loc_l = loc.lower().strip()
+            if not loc_l:
+                continue
+            if re.search(rf"(?<!\w){re.escape(loc_l)}(?!\w)", t):
+                matches.append(loc)
+
+        # Deduplicate while preserving order
+        seen = set()
+        out: List[str] = []
+        for m in matches:
+            if m not in seen:
+                out.append(m)
+                seen.add(m)
+
+        return out
+
+    def extract_location_from_text(self, text: str) -> Optional[str]:
+        """
+        Backwards-compatible single-location helper.
+        Returns the first detected location if multiple exist.
+        """
+        locs = self.extract_locations_from_text(text)
+        return locs[0] if locs else None
+
+    def locations_label(self, locs: List[str]) -> str:
+        """
+        For nicer phrasing in replies:
+          ["Brighton"] -> "Brighton"
+          ["Brighton","York"] -> "Brighton and York"
+          ["Brighton","York","Bath"] -> "Brighton, York and Bath"
+        """
+        locs = [l for l in locs if l]
+        if not locs:
+            return ""
+        if len(locs) == 1:
+            return locs[0]
+        if len(locs) == 2:
+            return f"{locs[0]} and {locs[1]}"
+        return f"{', '.join(locs[:-1])} and {locs[-1]}"
+
+    # ---------------------------
+    # Deterministic counting
+    # ---------------------------
+
+    def count_filtered(
+        self,
+        location: Optional[Union[str, List[str]]] = None,
+        price_mode: Optional[str] = None,
+        a: Optional[float] = None,
+        b: Optional[float] = None,
+    ) -> int:
+        """
+        Generic deterministic counter for intersections:
+          - location: None | str | list[str]
+          - price_mode: {"between", "above", "at_least", "below", "at_most", "exact"}
+          - a/b thresholds depending on mode
+        """
+        df = self.df
+
+        # Location filter (supports multi)
+        if location and "location" in df.columns:
+            if isinstance(location, list):
+                locs = [x.strip().lower() for x in location if x and str(x).strip()]
+                if locs:
+                    df = df[df["location"].fillna("").str.strip().str.lower().isin(locs)]
+            else:
+                loc = str(location).strip().lower()
+                df = df[df["location"].fillna("").str.strip().str.lower() == loc]
+
+        # Price filter
+        if price_mode:
+            self._ensure_cost_num()
+            c = pd.to_numeric(df["cost_num"], errors="coerce")
+
+            if price_mode == "above":          # strictly >
+                df = df[c > float(a)]
+            elif price_mode == "at_least":     # >=
+                df = df[c >= float(a)]
+            elif price_mode == "below":        # strictly <
+                df = df[c < float(a)]
+            elif price_mode == "at_most":      # <=
+                df = df[c <= float(a)]
+            elif price_mode == "between":
+                lo, hi = float(a), float(b)
+                df = df[(c >= lo) & (c <= hi)]
+            elif price_mode == "exact":
+                df = df[c == float(a)]
+
+        return int(len(df))
+
+    # ---------------------------
+    # Retrieval
+    # ---------------------------
+
+    def _coerce_cost_display(self, md: Dict[str, Any]) -> str:
+        """
+        Normalise cost for display (string).
+        """
+        v = md.get("cost", md.get("cost_gbp", "Unknown"))
+        if v is None:
+            return "Unknown"
+        s = str(v).strip()
+        return s if s else "Unknown"
+
+    def retrieve(self, query: str, n_results: int = 8) -> List[CourseResult]:
+        """
+        Retrieve top N semantically relevant courses via Chroma.
+        Returns CourseResult list populated from metadata.
+        """
         res = self.collection.query(
-            query_texts=[user_query],
+            query_texts=[query],
             n_results=n_results,
             include=["metadatas", "distances"],
         )
 
         metadatas = (res.get("metadatas") or [[]])[0]
-        dists = (res.get("distances") or [[]])[0]
-        ids = (res.get("ids") or [[]])[0]
+        distances = (res.get("distances") or [[]])[0]
 
-        recs: List[Recommendation] = []
-        for cid, md, dist in zip(ids, metadatas, dists):
+        results: List[CourseResult] = []
+        for md, dist in zip(metadatas, distances):
             if not md:
                 continue
-
-            if max_budget is not None:
-                try:
-                    if float(md.get("cost")) > float(max_budget):
-                        continue
-                except Exception:
-                    pass
-
-            recs.append(
-                Recommendation(
-                    class_id=str(cid),
-                    title=md.get("title", ""),
-                    location=md.get("location", ""),
-                    instructor=md.get("instructor", ""),
-                    course_type=md.get("type", ""),
-                    cost_gbp=md.get("cost", ""),
-                    distance=float(dist) if dist is not None else None,
+            results.append(
+                CourseResult(
+                    class_id=str(md.get("class_id", "")),
+                    title=str(md.get("title", "")),
+                    location=str(md.get("location", "")),
+                    course_type=str(md.get("course_type", "")),
+                    instructor=str(md.get("instructor", "")),
+                    cost_gbp=self._coerce_cost_display(md),
+                    distance=float(dist) if dist is not None else 0.0,
                 )
             )
+        return results
 
-        return recs[:5]
+    # ---------------------------
+    # E) Deterministic fallback retrieval
+    # ---------------------------
 
-    # -----------------------
-    # Generation (Gemini)
-    # -----------------------
-    def respond(self, user_query: str, recs: List[Recommendation]) -> str:
+    def fallback_search(
+        self,
+        query: str,
+        locations: Optional[List[str]] = None,
+        price_filter: Optional[Tuple[str, float, Optional[float]]] = None,
+        limit: int = 8,
+    ) -> List[CourseResult]:
+        """
+        Deterministic fallback when vector retrieval returns nothing.
+        Filters by location(s) + price if provided, then does simple keyword scoring.
+        """
+        df = self.df.copy()
+
+        # Location filter
+        if locations:
+            locs = [x.strip().lower() for x in locations if x and str(x).strip()]
+            if locs:
+                df = df[df["location"].fillna("").str.strip().str.lower().isin(locs)]
+
+        # Price filter
+        if price_filter:
+            mode, a, b = price_filter
+            self._ensure_cost_num()
+            c = pd.to_numeric(df["cost_num"], errors="coerce")
+
+            if mode == "above":
+                df = df[c > float(a)]
+            elif mode == "at_least":
+                df = df[c >= float(a)]
+            elif mode == "below":
+                df = df[c < float(a)]
+            elif mode == "at_most":
+                df = df[c <= float(a)]
+            elif mode == "between":
+                lo, hi = float(a), float(b)
+                df = df[(c >= lo) & (c <= hi)]
+            elif mode == "exact":
+                df = df[c == float(a)]
+
+        if df.empty:
+            return []
+
+        # Simple keyword scoring (generic + fast)
+        q = (query or "").strip().lower()
+        tokens = [t for t in re.findall(r"[a-zA-Z']+", q) if len(t) >= 3]
+
+        def score_row(row) -> int:
+            hay = " ".join([
+                str(row.get("title", "")),
+                str(row.get("description", "")),
+                str(row.get("course_type", "")),
+                str(row.get("instructor", "")),
+            ]).lower()
+            return sum(1 for tok in tokens if tok in hay)
+
+        df["_score"] = df.apply(score_row, axis=1)
+        df = df.sort_values(["_score"], ascending=False).head(limit)
+
+        out: List[CourseResult] = []
+        for _, r in df.iterrows():
+            out.append(
+                CourseResult(
+                    class_id=str(r.get("class_id", "")),
+                    title=str(r.get("title", "")),
+                    location=str(r.get("location", "")),
+                    course_type=str(r.get("course_type", "")),
+                    instructor=str(r.get("instructor", "")),
+                    cost_gbp=str(r.get("cost_gbp", "Unknown")),
+                    distance=0.0,
+                )
+            )
+        return out
+
+    # ---------------------------
+    # LLM Response
+    # ---------------------------
+
+    def respond(self, user_query: str, recs: List[CourseResult]) -> str:
+        """
+        Uses Gemini to generate a friendly response based on retrieved matches.
+        """
         if not recs:
-            prompt = (
-                "You are a friendly course concierge for the School of Dandori.\n"
-                f"User request: {user_query}\n\n"
-                "No matching courses were found from the catalogue.\n"
-                "Ask ONE short follow-up question to clarify (location, budget, or course type)."
-            )
-        else:
-            courses_text = "\n".join(
-                [
-                    f"- {r.title} (Class ID: {r.class_id}) | {r.location} | £{r.cost_gbp} | "
-                    f"{r.course_type} | Instructor: {r.instructor}"
-                    for r in recs
-                ]
+            return (
+                "I couldn’t find anything that matches that right now. "
+                "Could you tell me a location (or if you’re open to anywhere) and a rough budget?"
             )
 
-            prompt = (
-                "You are a friendly course concierge for the School of Dandori.\n"
-                "Only recommend courses from the list provided.\n\n"
-                f"User request: {user_query}\n\n"
-                "Retrieved courses:\n"
-                f"{courses_text}\n\n"
-                "Instructions:\n"
-                "- Recommend up to 3 courses.\n"
-                "- Give a 1–2 sentence reason for each.\n"
-                "- If a key detail is missing, ask ONE follow-up question.\n"
-                "- Keep it playful but not cringe.\n"
+        context_lines = []
+        for r in recs:
+            context_lines.append(
+                f"- {r.title} | id={r.class_id} | location={r.location} | type={r.course_type} | "
+                f"instructor={r.instructor} | cost={r.cost_gbp}"
             )
 
-        resp = self.gemini.models.generate_content(
-            model=self.gemini_model,
-            contents=prompt,
-        )
-        return getattr(resp, "text", str(resp))
+        prompt = f"""
+You are the School of Dandori Course Chatbot.
+
+Rules:
+- Only recommend courses that appear in the provided matches.
+- Do not invent details (dates, prerequisites, materials) unless explicitly in the match line.
+- If the user request is missing key info (like location or budget), ask ONE follow-up question.
+- Provide 3-5 suggestions maximum.
+- Keep the tone warm and playful but concise.
+
+User request:
+{user_query}
+
+Matches:
+{chr(10).join(context_lines)}
+
+Write the reply:
+"""
+
+        try:
+            out = self.model.generate_content(prompt)
+            return (out.text or "").strip() or "Sorry — I ran into an issue generating a reply."
+        except Exception as e:
+            return f"Sorry — I ran into an error generating a reply: {e}"
+
+    def respond_smart(self, user_query: str, recs: List[CourseResult], has_location: bool, has_budget: bool) -> str:
+        """
+        Smarter empty-results fallback:
+        - If user already provided location/budget, don't ask again.
+        - Ask for what's missing or ask for "vibe/type" instead.
+        """
+        if recs:
+            return self.respond(user_query, recs)
+
+        if not has_location and not has_budget:
+            return "I can help you find a class — what location are you looking in, and what’s your rough budget?"
+        if not has_location:
+            return "Which location should I search in? (Or tell me if you’re open to anywhere.)"
+        if not has_budget:
+            return "What’s your rough budget for the class?"
+        return "Got it. What vibe are you after — art, movement, storytelling, or something else?"
