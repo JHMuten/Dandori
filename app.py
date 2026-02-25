@@ -659,6 +659,12 @@ with tab_chat:
     st.title("🤖 Dandori Course Chatbot")
     st.write("Tell me what you're in the mood for, and I'll suggest a few classes.")
 
+    if "chat_context" not in st.session_state:
+        st.session_state.chat_context = {
+            "locations": None,
+            "price_filter": None,
+        }
+
     if "recommender" not in st.session_state:
         try:
             with st.spinner("Loading chatbot AI model (first time may take 30-60 seconds)..."):
