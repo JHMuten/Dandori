@@ -49,6 +49,23 @@ python grounding.py
 
 This creates a vector database in the `data/courses_db` directory that enables semantic search (finding courses by meaning rather than exact text matches).
 
+### Adding Geographic Coordinates (Optional)
+
+To enrich your course data with latitude/longitude coordinates for location-based features:
+
+```bash
+python geocode_locations.py
+```
+
+This script will:
+- Replace vague location names (like "District", "Gardens") with "TBC"
+- Geocode all valid UK locations using the Nominatim API
+- Add `latitude` and `longitude` columns to your dataset
+- Save the updated data to `data/courses.pkl`
+- Create a reference file at `data/location_coordinates.csv`
+
+**Note:** This process takes ~30 seconds due to Nominatim's rate limit (1 request/second). The coordinates are cached in the pickle file, so you only need to run this once.
+
 ### Running the Application
 
 Once you have the `courses.pkl` file, update the path in `app.py` (line 13) to point to your pickle file location, then run:

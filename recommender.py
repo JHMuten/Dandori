@@ -2,6 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple, Union
+from math import radians, cos, sin, asin, sqrt
 
 import pandas as pd
 import chromadb
@@ -16,6 +17,31 @@ from grounding import PERSIST_DIR, COLLECTION_NAME
 # Helpers / Models
 # ---------------------------
 
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great circle distance between two points on Earth (in miles).
+    
+    Args:
+        lat1, lon1: Latitude and longitude of point 1
+        lat2, lon2: Latitude and longitude of point 2
+    
+    Returns:
+        Distance in miles
+    """
+    # Convert decimal degrees to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    
+    # Radius of Earth in miles
+    r = 3956
+    
+    return c * r
+
 @dataclass
 class CourseResult:
     class_id: str
@@ -25,6 +51,7 @@ class CourseResult:
     instructor: str
     cost_gbp: str  # keep as display string
     distance: float = 0.0
+    distance_miles: Optional[float] = None  # Distance from user's query location
 
 
 # ---------------------------
@@ -79,6 +106,16 @@ class CourseRecommender:
 
         # --- Locations for quick extraction ---
         self.locations = sorted([x for x in self.df.get("location", pd.Series([], dtype=str)).unique().tolist() if x])
+        
+        # --- Build location coordinate cache ---
+        self.location_coords = {}
+        for loc in self.locations:
+            loc_rows = self.df[self.df["location"] == loc]
+            if not loc_rows.empty:
+                lat = loc_rows.iloc[0].get("latitude")
+                lon = loc_rows.iloc[0].get("longitude")
+                if pd.notna(lat) and pd.notna(lon):
+                    self.location_coords[loc] = (float(lat), float(lon))
 
         # --- Chroma persistent client ---
         self.chroma_client = chromadb.PersistentClient(path=persist_dir)
@@ -200,6 +237,18 @@ class CourseRecommender:
         if len(locs) == 2:
             return f"{locs[0]} and {locs[1]}"
         return f"{', '.join(locs[:-1])} and {locs[-1]}"
+    
+    def get_location_coords(self, location: str) -> Optional[Tuple[float, float]]:
+        """
+        Get lat/lon coordinates for a location name.
+        
+        Args:
+            location: Location name (e.g., "Brighton", "York")
+        
+        Returns:
+            (latitude, longitude) tuple or None if not found
+        """
+        return self.location_coords.get(location)
 
     # ---------------------------
     # Deterministic counting
@@ -265,10 +314,18 @@ class CourseRecommender:
         s = str(v).strip()
         return s if s else "Unknown"
 
-    def retrieve(self, query: str, n_results: int = 8) -> List[CourseResult]:
+    def retrieve(self, query: str, n_results: int = 8, reference_location: Optional[str] = None) -> List[CourseResult]:
         """
         Retrieve top N semantically relevant courses via Chroma.
         Returns CourseResult list populated from metadata.
+        
+        Args:
+            query: User's search query
+            n_results: Number of results to return
+            reference_location: Optional location name to calculate distances from
+        
+        Returns:
+            List of CourseResult objects, sorted by distance if reference_location provided
         """
         res = self.collection.query(
             query_texts=[query],
@@ -279,11 +336,31 @@ class CourseRecommender:
         ids = (res.get("ids") or [[]])[0]
         metadatas = (res.get("metadatas") or [[]])[0]
         distances = (res.get("distances") or [[]])[0]
+        
+        # Get reference coordinates if location provided
+        ref_coords = None
+        if reference_location:
+            ref_coords = self.get_location_coords(reference_location)
 
         results: List[CourseResult] = []
         for doc_id, md, dist in zip(ids, metadatas, distances):
             if not md:
                 continue
+            
+            # Calculate distance from reference location if available
+            distance_miles = None
+            if ref_coords:
+                course_lat = md.get("latitude")
+                course_lon = md.get("longitude")
+                if course_lat is not None and course_lon is not None:
+                    distance_miles = haversine_distance(
+                        ref_coords[0], ref_coords[1],
+                        float(course_lat), float(course_lon)
+                    )
+                    # Round very small distances (same location) to 0
+                    if distance_miles < 0.1:
+                        distance_miles = 0.0
+            
             results.append(
                 CourseResult(
                     class_id=str(doc_id),  # ID is stored as document ID, not in metadata
@@ -293,8 +370,16 @@ class CourseRecommender:
                     instructor=str(md.get("instructor", "")),
                     cost_gbp=self._coerce_cost_display(md),
                     distance=float(dist) if dist is not None else 0.0,
+                    distance_miles=distance_miles,
                 )
             )
+        
+        # Sort by distance if reference location was provided and distances calculated
+        if ref_coords and any(r.distance_miles is not None for r in results):
+            # Put courses with distances first, sorted by distance
+            # Then courses without distances (TBC locations)
+            results.sort(key=lambda r: (r.distance_miles is None, r.distance_miles if r.distance_miles else 0))
+        
         return results
 
     # ---------------------------
@@ -390,9 +475,14 @@ class CourseRecommender:
 
         context_lines = []
         for r in recs:
+            # Include distance if available
+            distance_info = ""
+            if r.distance_miles is not None:
+                distance_info = f" | distance={r.distance_miles:.1f} miles"
+            
             context_lines.append(
                 f"- {r.title} | id={r.class_id} | location={r.location} | type={r.course_type} | "
-                f"instructor={r.instructor} | cost={r.cost_gbp}"
+                f"instructor={r.instructor} | cost={r.cost_gbp}{distance_info}"
             )
 
         prompt = f"""
@@ -402,6 +492,7 @@ Rules:
 - Only recommend courses that appear in the provided matches.
 - Do NOT list course details (title, location, price, ID) in your response - they will be shown separately in cards below your message.
 - Instead, provide a brief, friendly introduction (1-2 sentences) about the courses found.
+- If distance information is provided, you can mention proximity (e.g., "I found some lovely options nearby").
 - If the user request is missing key info (like location or budget), ask ONE follow-up question.
 - Keep the tone warm and playful but concise.
 - Focus on the vibe/theme of the courses rather than listing them.

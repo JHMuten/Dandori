@@ -57,13 +57,26 @@ def main():
     for _, row in df.iterrows():
         batch_docs.append(compact_text(row))
         batch_ids.append(str(row["class_id"]))
-        batch_metas.append({
+        
+        # Get lat/lon, handling None values
+        lat = row.get("latitude")
+        lon = row.get("longitude")
+        
+        # Build metadata dict, only including lat/lon if they exist
+        meta = {
             "instructor": row.get("instructor", ""),
             "location": row.get("location", ""),
             "cost": row.get("cost_gbp", ""),
             "type": row.get("course_type", ""),
             "title": row.get("title", ""),
-        })
+        }
+        
+        # Only add lat/lon if they are valid numbers
+        if pd.notna(lat) and pd.notna(lon):
+            meta["latitude"] = float(lat)
+            meta["longitude"] = float(lon)
+        
+        batch_metas.append(meta)
 
         if len(batch_ids) >= BATCH_SIZE:
             collection.add(documents=batch_docs, ids=batch_ids, metadatas=batch_metas)

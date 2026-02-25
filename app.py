@@ -754,6 +754,35 @@ with tab_chat:
                 
                 # Display courses in horizontal layout
                 cols = st.columns(len(visible_recs))
+                
+                # Add CSS for consistent card heights and alignment
+                st.markdown(
+                    """
+                    <style>
+                    /* Force equal height columns in chatbot results */
+                    div[data-testid="stHorizontalBlock"] {
+                        align-items: stretch !important;
+                    }
+                    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+                        display: flex !important;
+                        flex-direction: column !important;
+                    }
+                    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] > div {
+                        flex: 1 !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                    }
+                    /* Make course title area fixed height */
+                    .course-title {
+                        min-height: 3em;
+                        display: flex;
+                        align-items: center;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
                 for col_idx, (col, r) in enumerate(zip(cols, visible_recs)):
                     with col:
                         # Highlight first result as best match
@@ -761,51 +790,70 @@ with tab_chat:
                         
                         # Use custom styling for best match
                         if is_best_match:
-                            st.markdown(
-                                """
-                                <style>
-                                .best-match-container {
-                                    border: 2px solid #4CAF50 !important;
-                                    background-color: rgba(76, 175, 80, 0.1);
-                                    border-radius: 8px;
-                                    padding: 12px;
-                                }
-                                </style>
-                                """,
-                                unsafe_allow_html=True
-                            )
                             with st.container(border=True):
                                 st.markdown("🏆 **BEST MATCH**", help="This course best matches your query")
-                                st.markdown(f"**{r['title']}**")
+                                # Use fixed height div for title
+                                title = r['title']
+                                if len(title) > 45:
+                                    title = title[:42] + "..."
+                                st.markdown(f'<div class="course-title"><strong>{title}</strong></div>', unsafe_allow_html=True)
+                                
                                 cost = r.get('cost_gbp')
                                 try:
                                     cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
                                 except (ValueError, TypeError):
                                     cost_display = f"£{cost}" if cost else "Unknown"
                                 st.markdown(f"📍 {r['location']}")
+                                
+                                # Show distance if available
+                                if r.get('distance_miles') is not None:
+                                    if r['distance_miles'] == 0.0:
+                                        st.markdown(f"🗺️ In {r['location']}")
+                                    else:
+                                        st.markdown(f"🗺️ {r['distance_miles']:.1f} miles away")
+                                else:
+                                    # Add empty space to maintain alignment
+                                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                                
                                 st.markdown(f"💷 {cost_display}")
                                 st.markdown(f"📚 {r['course_type']}")
                                 st.caption(f"🆔 {r['class_id']}")
                                 
                                 # More Details button
-                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}"):
+                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}", use_container_width=True):
                                     st.session_state.chatbot_expanded[expanded_key] = start_idx + col_idx
                                     st.rerun()
                         else:
                             with st.container(border=True):
-                                st.markdown(f"**{r['title']}**")
+                                # Use fixed height div for title
+                                title = r['title']
+                                if len(title) > 45:
+                                    title = title[:42] + "..."
+                                st.markdown(f'<div class="course-title"><strong>{title}</strong></div>', unsafe_allow_html=True)
+                                
                                 cost = r.get('cost_gbp')
                                 try:
                                     cost_display = f"£{float(cost):.2f}" if cost is not None else "Unknown"
                                 except (ValueError, TypeError):
                                     cost_display = f"£{cost}" if cost else "Unknown"
                                 st.markdown(f"📍 {r['location']}")
+                                
+                                # Show distance if available
+                                if r.get('distance_miles') is not None:
+                                    if r['distance_miles'] == 0.0:
+                                        st.markdown(f"🗺️ In {r['location']}")
+                                    else:
+                                        st.markdown(f"🗺️ {r['distance_miles']:.1f} miles away")
+                                else:
+                                    # Add empty space to maintain alignment
+                                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                                
                                 st.markdown(f"💷 {cost_display}")
                                 st.markdown(f"📚 {r['course_type']}")
                                 st.caption(f"🆔 {r['class_id']}")
                                 
                                 # More Details button
-                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}"):
+                                if st.button("More Details", key=f"details_chat_{msg_idx}_{start_idx + col_idx}", use_container_width=True):
                                     st.session_state.chatbot_expanded[expanded_key] = start_idx + col_idx
                                     st.rerun()
 
@@ -841,7 +889,9 @@ with tab_chat:
             has_location = bool(locs)
             has_budget = bool(parsed_price)
 
-            recs = recommender.retrieve(user_msg, n_results=8)
+            # Use first location as reference for proximity search
+            reference_loc = locs[0] if locs else None
+            recs = recommender.retrieve(user_msg, n_results=8, reference_location=reference_loc)
 
             # Deterministic fallback when vector retrieval returns nothing
             if not recs:
