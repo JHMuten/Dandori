@@ -159,7 +159,7 @@ SMALLTALK_RE = re.compile(
 def is_out_of_scope(text: str) -> bool:
     t = text or ""
 
-    # Allow clear course intent
+    # Allow clear course keywords
     if COURSE_INTENT_RE.search(t):
         return False
 
@@ -167,11 +167,20 @@ def is_out_of_scope(text: str) -> bool:
     if SMALLTALK_RE.search(t):
         return False
 
-    # Allow counting queries (already handled separately)
+    # Allow counting queries
     if COUNT_Q_RE.search(t):
         return False
 
-    # Otherwise, treat as out of scope
+    # Allow if it contains a recognised location
+    locs = st.session_state.recommender.extract_locations_from_text(t)
+    if locs:
+        return False
+
+    # Allow if it contains a price constraint
+    if parse_price_filter(t):
+        return False
+
+    # Otherwise block
     return True
 
 
@@ -514,6 +523,12 @@ with tab_chat:
     st.title("🤖 Dandori Course Chatbot")
     st.write("Tell me what you’re in the mood for, and I’ll suggest a few classes.")
 
+    if "chat_context" not in st.session_state:
+        st.session_state.chat_context = {
+            "locations": None,
+            "price_filter": None,
+        }
+
     if "recommender" not in st.session_state:
         st.session_state.recommender = CourseRecommender()
 
@@ -541,7 +556,27 @@ with tab_chat:
     if user_msg:
         st.session_state.messages.append({"role": "user", "content": user_msg})
 
-        
+        def update_context(user_msg: str, recommender: CourseRecommender):
+            ctx = st.session_state.chat_context
+
+            # Extract structured info
+            locs = recommender.extract_locations_from_text(user_msg)
+            price = parse_price_filter(user_msg)
+
+            # Overwrite if new info provided
+            if locs:
+                ctx["locations"] = locs
+
+            if price:
+                ctx["price_filter"] = price
+
+            # Handle "instead" logic (location swap but keep budget)
+            if "instead" in user_msg.lower() and locs:
+                ctx["locations"] = locs
+
+            st.session_state.chat_context = ctx
+
+
         if is_out_of_scope(user_msg):
             st.session_state.messages.append({
                 "role": "assistant",
@@ -572,8 +607,10 @@ with tab_chat:
         # Normal RAG flow
         recommender = st.session_state.recommender
 
-        locs = recommender.extract_locations_from_text(user_msg)
-        parsed_price = parse_price_filter(user_msg)
+        update_context(user_msg, recommender)
+        ctx = st.session_state.chat_context
+        locs = ctx["locations"]
+        parsed_price = ctx["price_filter"]
         has_location = bool(locs)
         has_budget = bool(parsed_price)
 
