@@ -70,6 +70,45 @@ PRICE_EXACT_RE = re.compile(
 
 UNKNOWN_LOC_RE = re.compile(r"\b(?:in|located in|near)\s+([A-Za-z][A-Za-z\s\-']{2,})\b", re.I)
 
+SMALLTALK_RE = re.compile(
+    r"\b(hi|hello|hey|thanks|thank you|what do you suggest)\b",
+    re.I,
+)
+
+COURSE_INTENT_RE = re.compile(
+    r"\b(course|courses|class|classes|workshop|workshops|learn|session|dandori)\b",
+    re.I,
+)
+
+def is_out_of_scope(text: str) -> bool:
+    """Check if user query is out of scope for course recommendations."""
+    t = text or ""
+    
+    # Allow clear course keywords
+    if COURSE_INTENT_RE.search(t):
+        return False
+    
+    # Allow small talk
+    if SMALLTALK_RE.search(t):
+        return False
+    
+    # Allow counting queries
+    if COUNT_Q_RE.search(t):
+        return False
+    
+    # Allow if it contains a recognised location
+    if st.session_state.recommender:
+        locs = st.session_state.recommender.extract_locations_from_text(t)
+        if locs:
+            return False
+    
+    # Allow if it contains a price constraint
+    if parse_price_filter(t):
+        return False
+    
+    # Otherwise block
+    return True
+
 
 def parse_price_filter(text: str):
     """
