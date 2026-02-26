@@ -68,6 +68,12 @@ PRICE_EXACT_RE = re.compile(
     re.I,
 )
 
+# Budget statement
+PRICE_BUDGET_RE = re.compile(
+    r"\b(?:budget|spend|pay)\s*(?:is|of|around|about)?\s*£?\s*(\d+(?:\.\d+)?)\b",
+    re.I,
+)
+
 UNKNOWN_LOC_RE = re.compile(r"\b(?:in|located in|near)\s+([A-Za-z][A-Za-z\s\-']{2,})\b", re.I)
 
 SMALLTALK_RE = re.compile(
@@ -168,6 +174,11 @@ def parse_price_filter(text: str):
     m_exact = PRICE_EXACT_RE.search(t)
     if m_exact:
         return ("exact", float(m_exact.group(1)), None)
+    
+    # Budget statement (e.g., "my budget is £67")
+    m_budget = PRICE_BUDGET_RE.search(t)
+    if m_budget:
+        return ("at_most", float(m_budget.group(1)), None)
 
     return None
 
@@ -667,12 +678,31 @@ with tab_search:
 # =========================================================
 with tab_chat:
     st.title("🤖 Dandori Course Chatbot")
-    st.write("Tell me what you're in the mood for, and I'll suggest a few classes.")
+    
+    # Add clear chat button
+    col1, col2 = st.columns([6, 1])
+    with col1:
+        st.write("Tell me what you're in the mood for, and I'll suggest a few classes.")
+    with col2:
+        if st.button("🔄 New Chat"):
+            st.session_state.messages = [
+                {"role": "assistant", "content": "Hey! What kind of class are you looking for today?"}
+            ]
+            st.session_state.chat_context = {
+                "locations": [],
+                "price_filter": None,
+                "query_history": [],
+                "region": None,
+            }
+            st.session_state.carousel_indices = {}
+            st.rerun()
 
     if "chat_context" not in st.session_state:
         st.session_state.chat_context = {
-            "locations": None,
+            "locations": [],
             "price_filter": None,
+            "query_history": [],  # Store recent user queries for semantic context
+            "region": None,  # Store region (e.g., "scotland", "north england")
         }
 
     if "recommender" not in st.session_state:
@@ -946,11 +976,23 @@ with tab_chat:
                         if coords:
                             locs = [any_loc]
                 
+                # Check for region (only if no specific location found)
+                region = recommender.extract_region_from_text(user_msg) if not locs else None
+                
                 price = parse_price_filter(user_msg)
 
-                # Overwrite if new info provided
+                # Update location/region (they are mutually exclusive)
                 if locs:
                     ctx["locations"] = locs
+                    ctx["region"] = None  # Clear region when specific location is set
+                elif region:
+                    ctx["region"] = region
+                    ctx["locations"] = []  # Clear locations when region is set
+                # If it's a new semantic query without location/region, clear both
+                elif COURSE_INTENT_RE.search(user_msg) and not price:
+                    # New course query without location - clear previous location context
+                    # But keep if it's just adding a price constraint
+                    pass  # Keep existing location/region
 
                 if price:
                     ctx["price_filter"] = price
@@ -958,8 +1000,21 @@ with tab_chat:
                 # Handle "instead" logic (location swap but keep budget)
                 if "instead" in user_msg.lower() and locs:
                     ctx["locations"] = locs
+                    ctx["region"] = None  # Clear region on "instead"
+                
+                # Track query history for semantic context (keep last 3 user queries)
+                # Only add if it's not just a constraint (has semantic content)
+                if not (locs or price or region) or COURSE_INTENT_RE.search(user_msg):
+                    ctx["query_history"] = ctx.get("query_history", [])
+                    ctx["query_history"].append(user_msg)
+                    # Keep only last 3 queries
+                    ctx["query_history"] = ctx["query_history"][-3:]
 
                 st.session_state.chat_context = ctx
+            
+            # Update context FIRST before any checks
+            # This ensures context is preserved even if we take early returns
+            update_context(user_msg, st.session_state.recommender)
 
             # Check for out of scope queries
             if is_out_of_scope(user_msg):
@@ -991,22 +1046,47 @@ with tab_chat:
             # Normal RAG flow with stateful context
             recommender = st.session_state.recommender
             
-            # Update context with new information from user message
-            update_context(user_msg, recommender)
+            # Get context (already updated above)
             ctx = st.session_state.chat_context
             
-            # Use context (remembers previous location/budget)
+            # Use context (remembers previous location/budget/region)
             locs = ctx["locations"]
             parsed_price = ctx["price_filter"]
-            has_location = bool(locs)
+            region = ctx.get("region")
+            query_history = ctx.get("query_history", [])
+            has_location = bool(locs) or bool(region)
             has_budget = bool(parsed_price)
 
-            # Check if query is about a region rather than a specific location
-            region = recommender.extract_region_from_text(user_msg)
+            # Build enhanced query with history for semantic search
+            # If current message is just a constraint, use previous semantic queries
+            if query_history and (locs or parsed_price or region) and not COURSE_INTENT_RE.search(user_msg):
+                # Combine recent queries for better semantic understanding
+                enhanced_query = " ".join(query_history[-2:]) + " " + user_msg
+            else:
+                enhanced_query = user_msg
             
             # Use first location as reference for proximity search (only if not a region query)
             reference_loc = locs[0] if locs and not region else None
-            recs = recommender.retrieve(user_msg, n_results=8, reference_location=reference_loc, region=region)
+            
+            # Determine how many results to fetch
+            # If region or location specified, get more results to show all matches
+            if region or locs:
+                n_results = 50  # Get more results for location/region searches
+            elif parsed_price:
+                n_results = 16  # Get extra for price filtering
+            else:
+                n_results = 8   # Default for general queries
+            
+            recs = recommender.retrieve(enhanced_query, n_results=n_results, reference_location=reference_loc, region=region)
+
+            # Apply price filtering to semantic search results
+            if recs and parsed_price:
+                recs = recommender.filter_by_price(recs, parsed_price)
+            
+            # For general queries without location/region, limit to 8
+            # For location/region queries, show all results
+            if not region and not locs:
+                recs = recs[:8]
 
             # Deterministic fallback when vector retrieval returns nothing
             if not recs:

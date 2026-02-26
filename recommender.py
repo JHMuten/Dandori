@@ -21,9 +21,10 @@ from grounding import PERSIST_DIR, COLLECTION_NAME
 # ---------------------------
 
 # Define UK regions with approximate latitude boundaries
+# Note: These are approximate and some border areas may overlap
 UK_REGIONS = {
-    "scotland": {"min_lat": 54.5, "max_lat": 61.0, "keywords": ["scotland", "scottish"]},
-    "north england": {"min_lat": 53.0, "max_lat": 55.5, "keywords": ["north of england", "northern england", "north england"]},
+    "scotland": {"min_lat": 55.0, "max_lat": 61.0, "keywords": ["scotland", "scottish"]},
+    "north england": {"min_lat": 53.0, "max_lat": 55.0, "keywords": ["north of england", "northern england", "north england"]},
     "midlands": {"min_lat": 52.0, "max_lat": 53.5, "keywords": ["midlands", "central england"]},
     "south england": {"min_lat": 50.0, "max_lat": 52.5, "keywords": ["south of england", "southern england", "south england"]},
     "wales": {"min_lat": 51.3, "max_lat": 53.5, "keywords": ["wales", "welsh"], "min_lon": -5.5, "max_lon": -2.5},
@@ -330,6 +331,60 @@ class CourseRecommender:
                         filtered.append(result)
         
         return filtered
+    
+    def filter_by_price(self, results: List[CourseResult], price_filter: Tuple[str, float, Optional[float]]) -> List[CourseResult]:
+        """
+        Filter course results by price constraint.
+        
+        Args:
+            results: List of CourseResult objects
+            price_filter: Tuple of (mode, a, b) from parse_price_filter
+        
+        Returns:
+            Filtered list of CourseResult objects
+        """
+        if not price_filter:
+            return results
+        
+        mode, a, b = price_filter
+        filtered = []
+        
+        for result in results:
+            # Get course price from dataset
+            course_rows = self.df[self.df["class_id"] == result.class_id]
+            if course_rows.empty:
+                continue
+            
+            # Ensure cost_num column exists
+            self._ensure_cost_num()
+            cost_num = course_rows.iloc[0].get("cost_num")
+            
+            if pd.isna(cost_num):
+                continue
+            
+            cost = float(cost_num)
+            
+            # Apply price filter
+            if mode == "above":
+                if cost > a:
+                    filtered.append(result)
+            elif mode == "at_least":
+                if cost >= a:
+                    filtered.append(result)
+            elif mode == "below":
+                if cost < a:
+                    filtered.append(result)
+            elif mode == "at_most":
+                if cost <= a:
+                    filtered.append(result)
+            elif mode == "between":
+                if a <= cost <= b:
+                    filtered.append(result)
+            elif mode == "exact":
+                if cost == a:
+                    filtered.append(result)
+        
+        return filtered
 
     def extract_location_from_text(self, text: str) -> Optional[str]:
         """
@@ -496,15 +551,19 @@ class CourseRecommender:
         
         Args:
             query: User's search query
-            n_results: Number of results to return
+            n_results: Number of results to return (or max to fetch before filtering)
             reference_location: Optional location name to calculate distances from
             region: Optional UK region to filter by (e.g., "north england", "scotland")
         
         Returns:
             List of CourseResult objects, sorted by distance if reference_location provided
         """
-        # If region specified, get more results to filter from
-        fetch_count = n_results * 3 if region else n_results
+        # For region filtering, we need to fetch more since we'll filter afterwards
+        # Don't multiply if n_results is already large (caller already adjusted)
+        if region and n_results <= 16:
+            fetch_count = n_results * 3
+        else:
+            fetch_count = n_results
         
         res = self.collection.query(
             query_texts=[query],
@@ -686,14 +745,14 @@ class CourseRecommender:
         prompt = f"""
     You are the School of Dandori Course Chatbot.
 
-    Rules:
-    - Only recommend courses that appear in the provided matches.
-    - Do NOT list course details (title, location, price, ID) in your response - they will be shown separately in cards below your message.
-    - Instead, provide a brief, friendly introduction (1-2 sentences) about the courses found.
-    - If distance information is provided, you can mention proximity (e.g., "I found some lovely options nearby").
-    - If the user request is missing key info (like location or budget), ask ONE follow-up question.
-    - Keep the tone warm and playful but concise.
-    - Focus on the vibe/theme of the courses rather than listing them.
+    CRITICAL RULES:
+    - Do NOT list any course names, titles, locations, prices, or IDs in your response
+    - Do NOT use bullet points or numbered lists
+    - Do NOT mention specific course details - they are shown in cards below
+    - ONLY provide a brief, friendly introduction (1-2 sentences maximum)
+    - If distance information is provided, you can mention proximity (e.g., "I found some lovely options nearby")
+    - Focus on the vibe/theme/type of courses, not individual courses
+    - Keep the tone warm and conversational
 
     User request:
     {user_query}
@@ -701,7 +760,7 @@ class CourseRecommender:
     Matches:
     {chr(10).join(context_lines)}
 
-    Write a brief, friendly response (1-2 sentences max) introducing the courses without listing their details:
+    Write ONLY a brief introduction (1-2 sentences) about the type of courses found, without listing any specific courses:
     """
 
         try:
@@ -709,10 +768,23 @@ class CourseRecommender:
                 model=self.gemini_model,
                 contents=prompt
             )
-            return response.text.strip() if response.text else self.format_recommendations(recs)
+            reply = response.text.strip() if response.text else ""
+            
+            # Safety check: if response contains bullet points or course-like patterns, use fallback
+            if reply and (
+                reply.count('\n-') > 0 or 
+                reply.count('\n•') > 0 or 
+                reply.count('\n1.') > 0 or
+                '|' in reply or
+                'class_' in reply.lower()
+            ):
+                # LLM ignored instructions, use simple fallback
+                return "I found some great options for you! Check out the courses below."
+            
+            return reply if reply else "I found some great options for you! Check out the courses below."
         except Exception:
             # Do NOT leak Gemini errors to the user
-            return self.format_recommendations(recs)
+            return "I found some great options for you! Check out the courses below."
 
     def respond_smart(self, user_query: str, recs: List[CourseResult], has_location: bool, has_budget: bool) -> str:
         """
