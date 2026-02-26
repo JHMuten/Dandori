@@ -6,3 +6,4 @@ google-genai>=0.2.0
 python-dotenv>=1.0.0
 sentence-transformers>=2.2.0
 geopy>=2.3.0
+graphviz>=0.20.0
