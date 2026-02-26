@@ -1001,9 +1001,12 @@ with tab_chat:
             has_location = bool(locs)
             has_budget = bool(parsed_price)
 
-            # Use first location as reference for proximity search
-            reference_loc = locs[0] if locs else None
-            recs = recommender.retrieve(user_msg, n_results=8, reference_location=reference_loc)
+            # Check if query is about a region rather than a specific location
+            region = recommender.extract_region_from_text(user_msg)
+            
+            # Use first location as reference for proximity search (only if not a region query)
+            reference_loc = locs[0] if locs and not region else None
+            recs = recommender.retrieve(user_msg, n_results=8, reference_location=reference_loc, region=region)
 
             # Deterministic fallback when vector retrieval returns nothing
             if not recs:
@@ -1017,7 +1020,7 @@ with tab_chat:
             reply = recommender.respond_smart(
                 user_query=user_msg,
                 recs=recs,
-                has_location=has_location,
+                has_location=has_location or bool(region),  # Region counts as location context
                 has_budget=has_budget,
             )
 

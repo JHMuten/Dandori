@@ -17,6 +17,20 @@ from grounding import PERSIST_DIR, COLLECTION_NAME
 
 
 # ---------------------------
+# UK Region Definitions
+# ---------------------------
+
+# Define UK regions with approximate latitude boundaries
+UK_REGIONS = {
+    "scotland": {"min_lat": 54.5, "max_lat": 61.0, "keywords": ["scotland", "scottish"]},
+    "north england": {"min_lat": 53.0, "max_lat": 55.5, "keywords": ["north of england", "northern england", "north england"]},
+    "midlands": {"min_lat": 52.0, "max_lat": 53.5, "keywords": ["midlands", "central england"]},
+    "south england": {"min_lat": 50.0, "max_lat": 52.5, "keywords": ["south of england", "southern england", "south england"]},
+    "wales": {"min_lat": 51.3, "max_lat": 53.5, "keywords": ["wales", "welsh"], "min_lon": -5.5, "max_lon": -2.5},
+}
+
+
+# ---------------------------
 # Helpers / Models
 # ---------------------------
 
@@ -252,6 +266,70 @@ class CourseRecommender:
                 return match.group(1)
         
         return None
+    
+    def extract_region_from_text(self, text: str) -> Optional[str]:
+        """
+        Extract a UK region from text (e.g., "north of England", "Scotland").
+        
+        Args:
+            text: User query text
+        
+        Returns:
+            Region name (key from UK_REGIONS) or None
+        """
+        text_lower = text.lower()
+        
+        for region_name, region_info in UK_REGIONS.items():
+            for keyword in region_info["keywords"]:
+                if keyword in text_lower:
+                    return region_name
+        
+        return None
+    
+    def filter_by_region(self, results: List[CourseResult], region: str) -> List[CourseResult]:
+        """
+        Filter course results to only include those within a specific UK region.
+        
+        Args:
+            results: List of CourseResult objects
+            region: Region name (key from UK_REGIONS)
+        
+        Returns:
+            Filtered list of CourseResult objects
+        """
+        if region not in UK_REGIONS:
+            return results
+        
+        region_info = UK_REGIONS[region]
+        min_lat = region_info["min_lat"]
+        max_lat = region_info["max_lat"]
+        min_lon = region_info.get("min_lon")
+        max_lon = region_info.get("max_lon")
+        
+        filtered = []
+        for result in results:
+            # Get course coordinates from dataset
+            course_rows = self.df[self.df["class_id"] == result.class_id]
+            if course_rows.empty:
+                continue
+            
+            lat = course_rows.iloc[0].get("latitude")
+            lon = course_rows.iloc[0].get("longitude")
+            
+            if pd.notna(lat) and pd.notna(lon):
+                lat = float(lat)
+                lon = float(lon)
+                
+                # Check latitude bounds
+                if min_lat <= lat <= max_lat:
+                    # Check longitude bounds if specified (for Wales)
+                    if min_lon is not None and max_lon is not None:
+                        if min_lon <= lon <= max_lon:
+                            filtered.append(result)
+                    else:
+                        filtered.append(result)
+        
+        return filtered
 
     def extract_location_from_text(self, text: str) -> Optional[str]:
         """
@@ -411,7 +489,7 @@ class CourseRecommender:
         s = str(v).strip()
         return s if s else "Unknown"
 
-    def retrieve(self, query: str, n_results: int = 8, reference_location: Optional[str] = None) -> List[CourseResult]:
+    def retrieve(self, query: str, n_results: int = 8, reference_location: Optional[str] = None, region: Optional[str] = None) -> List[CourseResult]:
         """
         Retrieve top N semantically relevant courses via Chroma.
         Returns CourseResult list populated from metadata.
@@ -420,13 +498,17 @@ class CourseRecommender:
             query: User's search query
             n_results: Number of results to return
             reference_location: Optional location name to calculate distances from
+            region: Optional UK region to filter by (e.g., "north england", "scotland")
         
         Returns:
             List of CourseResult objects, sorted by distance if reference_location provided
         """
+        # If region specified, get more results to filter from
+        fetch_count = n_results * 3 if region else n_results
+        
         res = self.collection.query(
             query_texts=[query],
-            n_results=n_results,
+            n_results=fetch_count,
             include=["metadatas", "distances"],
         )
 
@@ -470,6 +552,12 @@ class CourseRecommender:
                     distance_miles=distance_miles,
                 )
             )
+        
+        # Filter by region if specified
+        if region:
+            results = self.filter_by_region(results, region)
+            # Limit to requested number after filtering
+            results = results[:n_results]
         
         # Sort by distance if reference location was provided and distances calculated
         if ref_coords and any(r.distance_miles is not None for r in results):
