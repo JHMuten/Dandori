@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple, Union
 from math import radians, cos, sin, asin, sqrt
@@ -9,6 +10,8 @@ import chromadb
 from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 from google import genai
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 from grounding import PERSIST_DIR, COLLECTION_NAME
 
@@ -117,6 +120,11 @@ class CourseRecommender:
                 lon = loc_rows.iloc[0].get("longitude")
                 if pd.notna(lat) and pd.notna(lon):
                     self.location_coords[loc] = (float(lat), float(lon))
+        
+        # --- Initialize geocoder for on-the-fly location queries ---
+        self.geolocator = Nominatim(user_agent="dandori_course_app_v1.0")
+        self.geocode_cache = {}  # Cache for user-provided locations not in dataset
+        self.last_geocode_time = 0  # Track last API call for rate limiting
 
         # --- Chroma persistent client ---
         self.chroma_client = chromadb.PersistentClient(path=persist_dir)
@@ -214,6 +222,36 @@ class CourseRecommender:
                 seen.add(m)
 
         return out
+    
+    def extract_any_location_from_text(self, text: str) -> Optional[str]:
+        """
+        Extract a location from text, even if it's not in the dataset.
+        First tries to match known locations, then looks for common location patterns.
+        
+        Args:
+            text: User query text
+        
+        Returns:
+            Location name or None
+        """
+        # First try known locations
+        known_locs = self.extract_locations_from_text(text)
+        if known_locs:
+            return known_locs[0]
+        
+        # Try to extract unknown location using patterns
+        # Patterns like "in London", "near Manchester", "around Leeds"
+        location_patterns = [
+            r'\b(?:in|near|around|at)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b',
+            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:area|courses?)\b',
+        ]
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        
+        return None
 
     def extract_location_from_text(self, text: str) -> Optional[str]:
         """
@@ -242,14 +280,72 @@ class CourseRecommender:
     def get_location_coords(self, location: str) -> Optional[Tuple[float, float]]:
         """
         Get lat/lon coordinates for a location name.
+        First checks dataset locations, then tries on-the-fly geocoding for unknown locations.
         
         Args:
-            location: Location name (e.g., "Brighton", "York")
+            location: Location name (e.g., "Brighton", "York", "London")
         
         Returns:
             (latitude, longitude) tuple or None if not found
         """
-        return self.location_coords.get(location)
+        # First check if it's a known location from the dataset
+        if location in self.location_coords:
+            return self.location_coords[location]
+        
+        # Check geocode cache for previously queried locations
+        if location in self.geocode_cache:
+            return self.geocode_cache[location]
+        
+        # Try to geocode the location on-the-fly
+        coords = self._geocode_location(location)
+        
+        # Cache the result (even if None, to avoid repeated failed lookups)
+        self.geocode_cache[location] = coords
+        
+        return coords
+    
+    def _geocode_location(self, location_name: str, retry: int = 2) -> Optional[Tuple[float, float]]:
+        """
+        Geocode a location name using Nominatim API.
+        Respects rate limiting (1 request per second).
+        
+        Args:
+            location_name: Name of the location
+            retry: Number of retry attempts
+        
+        Returns:
+            (latitude, longitude) tuple or None if failed
+        """
+        if not location_name or location_name == 'TBC':
+            return None
+        
+        # Add UK context for better results
+        query = f"{location_name}, UK"
+        
+        # Respect Nominatim rate limit (1 request per second)
+        current_time = time.time()
+        time_since_last = current_time - self.last_geocode_time
+        if time_since_last < 1.0:
+            time.sleep(1.0 - time_since_last)
+        
+        for attempt in range(retry):
+            try:
+                location = self.geolocator.geocode(query, timeout=5)
+                self.last_geocode_time = time.time()
+                
+                if location:
+                    return (location.latitude, location.longitude)
+                else:
+                    return None
+                    
+            except GeocoderTimedOut:
+                if attempt < retry - 1:
+                    time.sleep(1)
+                continue
+            except (GeocoderServiceError, Exception):
+                return None
+        
+        return None
 
     # ---------------------------
     # Deterministic counting

@@ -201,6 +201,16 @@ def handle_count_question(user_text: str, recommender: CourseRecommender):
         return None
 
     locs = recommender.extract_locations_from_text(text)
+    
+    # If no known locations found, try to extract any location
+    if not locs:
+        any_loc = recommender.extract_any_location_from_text(text)
+        if any_loc:
+            # Verify it can be geocoded
+            coords = recommender.get_location_coords(any_loc)
+            if coords:
+                locs = [any_loc]
+    
     parsed = parse_price_filter(text)
 
 
@@ -924,8 +934,18 @@ with tab_chat:
             def update_context(user_msg: str, recommender: CourseRecommender):
                 ctx = st.session_state.chat_context
 
-                # Extract structured info
+                # Extract structured info - try known locations first
                 locs = recommender.extract_locations_from_text(user_msg)
+                
+                # If no known locations found, try to extract any location
+                if not locs:
+                    any_loc = recommender.extract_any_location_from_text(user_msg)
+                    if any_loc:
+                        # Verify it can be geocoded before using it
+                        coords = recommender.get_location_coords(any_loc)
+                        if coords:
+                            locs = [any_loc]
+                
                 price = parse_price_filter(user_msg)
 
                 # Overwrite if new info provided

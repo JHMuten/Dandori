@@ -4,9 +4,7 @@ all_pdfs/
 pdf_samples/
 
 # --- Diagram files (for presentations only) ---
-generate_pipeline_diagram.py
-data_pipeline_diagram*
-*.gv
+diagrams/
 
 # --- Python / Streamlit junk ---
 __pycache__/
